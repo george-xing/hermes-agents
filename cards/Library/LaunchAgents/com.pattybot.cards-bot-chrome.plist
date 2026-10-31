@@ -12,12 +12,18 @@
         <string>--remote-debugging-port=19223</string>
         <string>--no-first-run</string>
         <string>--no-default-browser-check</string>
+        <string>--disable-backgrounding-occluded-windows</string>
+        <string>--disable-renderer-backgrounding</string>
+        <string>--disable-background-timer-throttling</string>
     </array>
 
     <!--
-        Mirrors twitter-bot-chrome.plist exactly. Different port (19223 vs
-        9222) and different user-data-dir (cards-bot-chrome vs twitter-bot-chrome)
-        are the only divergences. Both Chromes coexist because Chromium's
+        Mirrors twitter-bot-chrome.plist except for the port (19223 vs 9222),
+        the user-data-dir (cards-bot-chrome vs twitter-bot-chrome), and the
+        three --disable-*background* flags: the mini's console session sits at
+        the lock screen, so Chrome treats the window as occluded, every tab
+        reports visibilityState "hidden", and BofA's sign-in widget never
+        leaves its fade-in state (2026-10-31). Both Chromes coexist because Chromium's
         process singleton is keyed on --user-data-dir.
 
         KeepAlive implies an initial speculative launch (per launchd.plist(5)),

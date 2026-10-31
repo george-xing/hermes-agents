@@ -23,6 +23,42 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             journal.Journal(self.path).reserve_login("chase")
 
+    def test_declaring_zero_submissions_is_a_noop_but_counts_are_protected(self):
+        # 2026-10-31: issuer(..., login_submissions=0) raised after prepare() and orphaned a running journal.
+        self.j.issuer("chase", login_submissions=0, required_cards=["existing"])
+        self.assertEqual(json.loads(self.path.read_text())["issuers"]["chase"]["login_submissions"], 0)
+        with self.assertRaises(ValueError):
+            self.j.issuer("chase", login_submissions=1)
+        self.j.reserve_login("chase")
+        with self.assertRaises(ValueError):
+            self.j.issuer("chase", login_submissions=0)
+
+    def test_logins_are_serialized_and_spaced(self):
+        self.j.issuer("amex", tab_id="amex-tab")
+        self.j.reserve_login("chase")
+        with self.assertRaisesRegex(ValueError, "Record the chase outcome"):
+            self.j.reserve_login("amex")
+        self.j.issuer("chase", status="completed", sign_out="verified")
+        self.assertGreater(self.j.login_wait_seconds("amex"), 50)
+        with self.assertRaisesRegex(ValueError, "Wait"):
+            self.j.reserve_login("amex")
+        self.assertEqual(json.loads(self.path.read_text())["issuers"]["amex"]["login_submissions"], 0)
+        with self.j.transaction() as data:
+            data["issuers"]["chase"]["submission_recorded_at"] = "2000-01-01T00:00:00+00:00"
+        self.assertEqual(self.j.login_wait_seconds("amex"), 0)
+        self.j.reserve_login("amex")
+
+    def test_abandon_only_closes_journals_without_bank_actions(self):
+        self.j.abandon("journal setup error")
+        data = json.loads(self.path.read_text())
+        self.assertEqual((data["status"], data["abandoned_reason"]), ("abandoned", "journal setup error"))
+        other = journal.Journal(Path(self.tmp.name) / "hermes-runs/other.json")
+        other.prepare()
+        other.issuer("chase")
+        other.reserve_login("chase")
+        with self.assertRaises(ValueError):
+            other.abandon("too late")
+
     def test_uncertain_click_cannot_be_repeated(self):
         self.j.reserve_offer("chase", "chase::example")
         with self.assertRaises(ValueError):

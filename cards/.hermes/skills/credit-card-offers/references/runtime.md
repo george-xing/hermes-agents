@@ -19,8 +19,13 @@ journal.issuer("amex", tab_id=amex_target_id)
 journal.issuer("bofa")  # Required even if credentials/tab are unavailable.
 ```
 
-Keep this journal path for the whole run. Before the single login submission,
-call `journal.reserve_login(issuer)`. Use `journal.issuer(issuer, **fields)` to
+Keep this journal path for the whole run. `journal.issuer` accepts
+`login_submissions=0` as a harmless declaration but never a nonzero count. If
+setup raises before any bank action, call `journal.abandon("<reason>")` on that
+journal and start a fresh one; never leave a `running` orphan. Before the
+single login submission, call `journal.reserve_login(issuer)`; it requires
+every other submitted issuer to have a recorded outcome and 60 seconds since
+their submit (`journal.login_wait_seconds(issuer)`). Use `journal.issuer(issuer, **fields)` to
 record the fill results, verified offers page, failure reason, or sign-out.
 Never include credentials or full tool receipts.
 
@@ -34,8 +39,8 @@ BofA scope and offer classification are defined in additional-cards.md. This wri
 legacy index. If index persistence fails, stop further clicks; the verified
 record remains available for repair. Do not replay an uncertain click.
 
-Handle each issuer independently but finish its activation loop before moving
-to the next issuer. With 40 model turns, batch work within each issuer and
+Handle each issuer independently but finish its activation loop, sign-out, and
+recorded outcome before the next issuer's login submit. With 40 model turns, batch work within each issuer and
 reserve turns for all three issuers plus sign-out/finalization. Never omit a
 card or issuer and claim completion; persist partial coverage if time runs out.
 Use the named native browser session's Python loop to batch work. Test syntax
