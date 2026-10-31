@@ -38,14 +38,22 @@ def latest_journal(directory=CARDS_STATE):
     files = list(directory.glob("*.json"))
     if not files:
         return None, None
-    path = max(files, key=lambda p: p.stat().st_mtime_ns)
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data, dict):
-            raise ValueError("journal must be an object")
-        return path, data
-    except (OSError, ValueError):
-        return path, {"status": "invalid_journal"}
+    candidates = []
+    for path in files:
+        modified = path.stat().st_mtime
+        try:
+            data = json.loads(path.read_text())
+            if not isinstance(data, dict):
+                raise ValueError("journal must be an object")
+            started = timestamp(data.get("started_at"))
+        except (OSError, ValueError, TypeError, AttributeError):
+            data, started = {"status": "invalid_journal"}, None
+        # Cleanup can touch an older run after its replacement finishes.
+        # Missing/corrupt timestamps fall back to mtime, failing closed.
+        candidates.append((started.timestamp() if started else modified,
+                           modified, str(path), path, data))
+    _, _, _, path, data = max(candidates, key=lambda item: item[:3])
+    return path, data
 
 
 def card_issues(journal):
@@ -56,7 +64,7 @@ def card_issues(journal):
         reasons.append("cards_" + str(journal.get("status", "missing_status")))
     if any(not isinstance(f, dict) or not f.get("resolved") for f in journal.get("failures", [])):
         reasons.append("cards_unresolved_failures")
-    for name in ("chase", "amex"):
+    for name in sorted(set(journal.get("required_issuers", ("chase", "amex"))) | set(journal.get("issuers", {}))):
         issuer = journal.get("issuers", {}).get(name, {})
         if issuer.get("status") != "completed":
             reasons.append(name + "_incomplete")
@@ -66,6 +74,9 @@ def card_issues(journal):
             reasons.append(name + "_signout_unverified")
         if issuer.get("pending_offer"):
             reasons.append(name + "_uncertain_click")
+        if any(issuer.get("cards", {}).get(card, {}).get("status") != "completed"
+               for card in issuer.get("required_cards", [])):
+            reasons.append(name + "_card_coverage_incomplete")
     return reasons
 
 

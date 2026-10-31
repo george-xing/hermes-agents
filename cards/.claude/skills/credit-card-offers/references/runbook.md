@@ -8,7 +8,7 @@
 - Delivery: Hermes scheduler sends the final roundup to Telegram chat 7953915703.
 - Browser: existing cards Chrome on CDP port 19223, owned by
   `com.pattybot.cards-bot-chrome`. Keep this daemon enabled.
-- Credentials: current Chase/Amex Login items in **AI agents**, resolved through
+- Credentials: current Chase/Amex/BofA Login items in **AI agents**, resolved through
   Hermes's `OP_SERVICE_ACCOUNT_TOKEN`. No cards-specific Keychain token is used.
 - Native credentials: discover handles with `browser_vault_list`; inject only
   through `browser_vault_fill` with the exact observed `target_id`. Chase's
@@ -39,7 +39,7 @@ once. This performs the complete authorized bank-login/offer/sign-out workflow
 and sends the roundup. Do not launch another run while it is active.
 Pause/resume with `hermes cron pause JOB_ID` / `hermes cron resume JOB_ID`.
 MFA, device verification, CAPTCHA, and rejected logins require human attention;
-Hermes continues the other issuer and reports a partial result.
+Hermes continues the other issuers and reports a partial result.
 
 ## Daily repair and verification
 
@@ -73,3 +73,25 @@ Hermes flow instead has the user's explicitly authorized 1Password vault access.
 The failed provisioning attempt created a service account whose token was lost.
 Revoke that failed `pattybot-cards-mac-mini` account in 1Password. Do not revoke
 the separate service account currently used by Hermes.
+
+## Additional cards (2026-10-30)
+
+The same daily job also checks Amazon/Prime Visa within Chase and BofA
+Alaska/Atmos BankAmeriDeals. See the Hermes skill's
+`references/additional-cards.md` for eligibility, timed-deal exclusions, and
+monthly targeted-bonus checks. BofA needs a Login item in AI agents with its
+observed official login origin; missing metadata or MFA is reported as setup
+needed while the existing issuers continue. No extra schedule is needed.
+
+New runs declare all three required issuers. Bank UI support for BofA and
+Amazon card switching requires live verification; unit tests only validate
+bookkeeping. The 2026-10-30 live test verified Amazon card switching, four
+activations (three using the repaired maintained parser/verifier), and Chase
+sign-out. BofA login/navigation/sign-out worked after user MFA, but the offer
+feed remained Loading, so BofA activation is still unverified. Amex required
+MFA during this test. The daily workflow remains enabled with full coverage.
+
+For a manual API invocation with transient per-run context, use the same
+interpreter as `~/.local/bin/hermes`: `~/.hermes/hermes-agent/venv/bin/python`.
+The older `.venv` lacks Telegram support and caused a manual test delivery
+failure. Prefer the CLI for ordinary runs; do not change the scheduled runtime.

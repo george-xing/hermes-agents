@@ -83,12 +83,24 @@ record the single submission attempt in the run journal **before** this click.
 Use a DOM click on the observed submit control. This is the method that reached
 Amex's authenticated offers page in the verified native run. Do not improvise
 coordinate clicks on a bank form or treat a click-call return as bank acceptance.
+Keep reservation and click in the **same browser_exec call**, using the existing
+run's `journal_path` and the selected `issuer` (`chase` or `amex`). Do not omit
+the reservation when adapting the example. If reservation raises, do not click;
+a previously reserved attempt requires read-only reconciliation, not resubmission.
+Never backfill a missing reservation after a click to hide an audit gap.
 
 ```python
 # Submit once on the same verified bank tab
 import json
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path.home() / "dotfiles/cards/bin"))
+from cards_journal import Journal
+# Reopen this run's existing path: browser_exec variables do not persist.
+journal = Journal(journal_path)
 switch_tab(target_id)
 assert current_tab()["target_id"] == target_id
+journal.reserve_login(issuer)  # Durable reservation MUST succeed before js/click.
 clicked = js("""((selector, frameSelector, expectedOrigin) => {
   if (location.origin !== expectedOrigin) return false;
   const d = frameSelector ? document.querySelector(frameSelector)?.contentDocument : document;
