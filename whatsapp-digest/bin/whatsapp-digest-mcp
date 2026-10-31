@@ -1,8 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-
-export HOME=/Users/pattybot
-NODE=/opt/homebrew/bin/node
-APP_DIR="$HOME/.local/share/whatsapp-digest"
-
-exec "$NODE" "$APP_DIR/src/server.js"

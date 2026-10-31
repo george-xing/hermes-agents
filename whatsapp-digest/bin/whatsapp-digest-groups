@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-export HOME=/Users/pattybot
-exec /usr/bin/env node /Users/pattybot/.local/share/whatsapp-digest/src/discover-groups-cli.js "$@"

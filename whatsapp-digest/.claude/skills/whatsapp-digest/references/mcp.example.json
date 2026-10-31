@@ -1,9 +1,0 @@
-{
-  "whatsapp-digest": {
-    "command": "/Users/pattybot/bin/whatsapp-digest-mcp",
-    "env": {
-      "WHATSAPP_DIGEST_AUTH_DIR": "/Users/pattybot/.local/state/whatsapp-digest/auth",
-      "WHATSAPP_DIGEST_READY_TIMEOUT_MS": "120000"
-    }
-  }
-}
