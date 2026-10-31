@@ -57,10 +57,11 @@ first line so the scheduler and maintenance agree about completion.
 
 ## Retired components
 
-`com.pattybot.credit-card-offers` and `com.pattybot.cards-keepalive` are disabled.
-The old launchd daily plist has no schedule. `cards-fire.sh` exits with migration
-guidance, so an old caller cannot start the former workflow. Do not re-enable
-these jobs or run the Keychain provisioners.
+The `com.pattybot.credit-card-offers` and `com.pattybot.cards-keepalive`
+LaunchAgents were booted out and their plists removed from this package on
+2026-10-31 (the Mac mini keeps the old links in `~/Library/LaunchAgents.disabled/`).
+`cards-fire.sh` exits with migration guidance, so an old caller cannot start the
+former workflow. Do not re-enable these jobs or run the Keychain provisioners.
 
 `cards-secret-fill.py`, `cards-auth.py`, `cards-offers.py`, the Seatbelt profile, and the Keychain helper
 are retained as historical implementation files, not dependencies of this flow.
