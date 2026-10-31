@@ -31,7 +31,7 @@ echo
 if lsof -nP -iTCP:${DEBUG_PORT} -sTCP:LISTEN >/dev/null 2>&1; then
   echo "ERROR: port ${DEBUG_PORT} is already in use by:" >&2
   lsof -nP -iTCP:${DEBUG_PORT} -sTCP:LISTEN >&2
-  echo "Kill that process or pick a different port (edit the plist + this script + cards-prefire.sh)." >&2
+  echo "Kill that process or pick a different port (edit the plist + this script)." >&2
   exit 1
 fi
 echo "  ✓ port ${DEBUG_PORT} is free"
@@ -77,18 +77,10 @@ cat <<EOF
 3. A Chrome window will appear (the cards bot's). Its stable device profile is:
      $PERSISTENT_DIR
 
-4. Configure the dedicated read-only 1Password service account and Login-item
-   references (the token is entered through a hidden Keychain prompt):
-     ~/dotfiles/cards/bin/cards-onepassword-setup.sh
-
-5. Sanity-check the daemon + authentication page detection:
-     ~/dotfiles/cards/bin/cards-prefire.sh
-     ~/dotfiles/cards/bin/cards-auth.py login --dry-run
-     # Last line should be: SAVED_FRONTMOST_PID=<pid>
-
-   The full skill fire (cards-fire.sh credit-card-offers) requires the
-   SKILL.md to be in place — that's phase 3 of the build, after this
-   bootstrap.
+4. Offers run through the Hermes credit-card-offers skill and cron job,
+   which attach to this Chrome on port 19223. The old 1Password/Keychain
+   provisioners, prefire, login and offers scripts were
+   removed from this repo on 2026-10-31 (recoverable from git history before that commit).
 
 NEVER do these — they were considered and rejected:
   - Don't import cookies from your daily Chrome. Bank cookies frequently

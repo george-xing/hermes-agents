@@ -64,8 +64,9 @@ package on 2026-10-31 (the Mac mini keeps the old links in
 guidance, so an old caller cannot start the former workflow. Do not re-enable
 these jobs or run the Keychain provisioners.
 
-`cards-secret-fill.py`, `cards-auth.py`, `cards-offers.py`, the Seatbelt profile, and the Keychain helper
-are retained as historical implementation files, not dependencies of this flow.
+`cards-secret-fill.py`, `cards-auth.py`, `cards-offers.py`, `cards-prefire.sh`,
+`cards-keepalive.sh`, the 1Password/Keychain provisioners, the Seatbelt profile,
+and the Keychain helper were removed from this repo on 2026-10-31 (recoverable from git history before that commit).
 The Keychain-scoped protection applied to the old Codex offers process; the new
 Hermes flow instead has the user's explicitly authorized 1Password vault access.
 

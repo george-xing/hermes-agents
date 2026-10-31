@@ -11,7 +11,8 @@ Hermes accesses the Chase/Amex items in the **AI agents** 1Password vault using
 its existing service-account token through native `browser_vault_list` and
 `browser_vault_fill`. Bind each fill to the observed tab ID; Chase's same-origin
 login iframe also needs `frame_selector`. Hermes enters the returned nonsecret
-identifier and submits once. `cards-secret-fill.py` is retired from this flow.
+identifier and submits once. `cards-secret-fill.py` and the other legacy
+login/offer scripts were removed from this repo on 2026-10-31 (recoverable from git history before that commit).
 Do not expose credentials in model context, tool output, arguments, or images.
 
 The former `cards-fire.sh` launchd job, deterministic login/offer driver,

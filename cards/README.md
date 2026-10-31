@@ -3,8 +3,8 @@
 Hermes uses a dedicated Chrome profile to activate available Chase and Amex
 offers, records each verified activation, signs out, and delivers a roundup.
 The active implementation is the [Hermes skill](.hermes/skills/credit-card-offers/SKILL.md).
-The former deterministic login/offer scripts and Keychain provisioning path are
-retired; retained legacy files are not installation instructions.
+The former deterministic login/offer scripts, keepalive and Keychain
+provisioning path were removed from this repo on 2026-10-31 (recoverable from git history before that commit).
 
 The credential path is:
 
@@ -44,6 +44,5 @@ It does not log in, retrieve credentials, or drive the bank UI. Uncertain clicks
 are inspected without repeating them; real MFA and rejected logins stop the
 affected issuer. Partial outcomes remain failures visible to daily maintenance.
 
-Tests: `python3 -m unittest discover -s cards/tests`. The legacy macOS sandbox
-tests need to run outside an already nested sandbox. Private journals, cookies,
+Tests: `python3 -m unittest discover -s cards/tests`. Private journals, cookies,
 tokens and logs are excluded from Git.
