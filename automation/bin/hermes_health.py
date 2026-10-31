@@ -131,8 +131,7 @@ def atomic_json(path, value):
 
 def source_fingerprint(kind):
     digest = hashlib.sha256()
-    roots = [REPO / "automation"]
-    roots += [REPO / kind] if kind in ("cards", "twitter") else [HERMES / "scripts"]
+    roots = [REPO / "automation", REPO / kind]
     for root in roots:
         for path in sorted(root.rglob("*")):
             if path.is_file() and not {"state", "__pycache__", ".git"}.intersection(path.parts):
