@@ -1,17 +1,19 @@
 ---
 name: credit-card-offers
-description: Log in to Chase and Amex through the existing cards browser using the AI agents 1Password vault, activate available card offers, and return a daily roundup. Use for the scheduled cards job or requests to activate Chase/Amex offers.
+description: Manage Chase (including Amazon/Prime Visa), Amex, and Bank of America Alaska/Atmos card offers through the existing cards browser and AI agents 1Password vault. Use for scheduled activations, offer checks, and targeted bonus reviews.
 metadata:
   hermes:
     category: finance
-    tags: [chase, amex, offers, 1password, browser]
+    tags: [chase, amazon-visa, amex, bofa, alaska, offers, 1password, browser]
 ---
 
 # Credit Card Offers — Hermes
 
 Hermes owns navigation, login decisions, offer activation, and sign-out. The
-user authorized this daily workflow and use of the Chase/Amex Login items in
-**AI agents**. The old standalone login script, Keychain token, Codex wrapper,
+user authorized this daily workflow and its extension to Amazon Visa and
+Bank of America Alaska/Atmos on 2026-10-30. Use the issuer Login items in
+**AI agents** when available; report missing BofA setup without blocking the
+existing issuers. The old standalone login script, Keychain token, Codex wrapper,
 and deterministic offers fallback are retired and were removed from the repo
 (see git history). `cards-fire.sh` only prints migration guidance; do not invoke it.
 
@@ -28,7 +30,7 @@ message. A manual chat invocation returns the same roundup to that chat.
   navigation, input metadata, the nonsecret username, submission, and offers.
   Verify its actual CDP endpoint is port 19223 before any bank action; do not
   assume a session name alone selects the browser.
-- **Use native `browser_vault_list` and `browser_vault_fill` for both issuers.**
+- **Use native `browser_vault_list` and `browser_vault_fill` for all issuers.**
   Discover the current 1Password handle from the AI agents login metadata;
   use its returned identifier for the username. Passwords are resolved and
   injected by the native vault tool, never by shell/`op read`, generic typing,
@@ -40,6 +42,9 @@ message. A manual chat invocation returns the same roundup to that chat.
 - Native origin binding remains exact. The saved Chase login must include
   `https://secure.chase.com` for its protected login; Amex uses the saved
   `https://www.americanexpress.com` login origin. Do not bypass an origin refusal.
+- BofA: start from `https://www.bankofamerica.com/`, follow its official
+  sign-in and Deals navigation, and require the saved Login item to allow the
+  actual observed login origin. Do not guess a deep link or add vault origins.
 - Keep passwords, tokens and filled input values out of logs and screenshots.
 - Existing activation history remains under
   `/Users/pattybot/.claude/skills/credit-card-offers/state/`.
@@ -65,8 +70,21 @@ message. A manual chat invocation returns the same roundup to that chat.
    file="references/runtime.md")`. Use its tested journal helper and exercise
    persistence **before** login or any offer click. Create a secret-free journal in
    `state/hermes-runs/<UTC-timestamp>.json` with `status: running`, per-issuer
-   status, `activations: []`, and `failures: []`. Record verified activations
+   status, `required_issuers: ["chase", "amex", "bofa"]`, `activations: []`, and
+   `failures: []`. Use `journal.prepare(required_issuers=("chase", "amex", "bofa"))`. Record verified activations
    immediately, using atomic replacement. Retain partial progress on failure.
+
+## Card scope and recurring checks
+
+Read [additional-cards.md](references/additional-cards.md) before processing
+Chase or BofA. It defines card selection, BofA offer classification, and the
+monthly targeted-bonus review. Keep the existing Chase selected card and Amex
+selected card in scope; additionally select the Amazon/Prime Visa within Chase
+and verify the Alaska/Atmos card is eligible within BofA. No other card expansion.
+Record Chase card coverage before switching; do not mark Chase completed if the
+Amazon card could not be found or checked. Ordinary safe activations run daily;
+review targeted spending bonuses on the first successful run each calendar
+month (America/New_York), including each quarter's first month.
 
 ## Attach the managed browser to the selected tab
 
@@ -95,6 +113,9 @@ Official destinations:
 
 - Chase: `https://secure.chase.com/web/auth/dashboard?navKey=reviewMerchantOffers`
 - Amex: `https://global.americanexpress.com/offers/eligible`
+- BofA: `https://www.bankofamerica.com/` → official sign-in → Rewards & Deals /
+  cash back deals. This route requires live discovery; no BofA selectors have
+  been verified. Stop that issuer if the native vault Login item is unavailable.
 
 Navigate each issuer to its protected offers destination and inspect current
 page state. If already authenticated, proceed to offers. Otherwise inspect
@@ -123,7 +144,7 @@ Load references with `skill_view(name="credit-card-offers", file="references/nat
 and `file="references/offer-navigation.md"`; they belong to the Hermes skill,
 not the old `.claude` routing folder. Read [native-login.md](references/native-login.md) before credential entry. Use
 its native input setter and input/change events for the observed username
-control on both banks, then verify only a boolean that it matches the identifier
+control on each bank, then verify only a boolean that it matches the identifier
 returned by `browser_vault_list`. Keep the password in native vault fill.
 The same reference shows the verified DOM button click for submission; use it
 instead of coordinate clicks for these known login controls.
@@ -157,7 +178,7 @@ login submission. Use `document.body?.innerText || ''` in status probes.
 
 If SMS, push approval, CAPTCHA, device verification, password reset, or
 ambiguous MFA appears, stop that issuer and report the action needed. Do not
-change authentication settings. Continue the other issuer independently.
+change authentication settings. Continue the other issuers independently.
 Clear filled inputs before taking an authentication screenshot; otherwise
 omit the screenshot. Never capture HTML or input values containing credentials.
 
@@ -168,12 +189,30 @@ Preserve the existing session until final sign-out or stop on the challenge.
 
 ## Offers and persistence
 
+For Amex, use the maintained `cards_journal.parse_amex_offer(tile_text)` before
+any reservation/click; never assume the first raw line is the merchant (NEW is
+a UI badge). Follow the extraction contract in offer-navigation.md.
+
+On a maintenance replay, inspect the preceding partial journal before login.
+If activations were verified but merchant/deal metadata was corrupted, recover
+those fields from saved tile evidence or the same card's Added to Card view
+using read-only inspection during the single authorized login. Do not click
+those offers again. Preserve original keys and verification timestamps as
+audit evidence, record corrected metadata and its observed source, and resolve
+only the matching metadata failure after every affected record is repaired.
+If evidence cannot be recovered, carry the unresolved metadata failure into
+the new journal so a new empty run cannot hide the historical data gap.
+Do not invent missing deal amounts or treat a successful new run as proof of
+old metadata. No extra login submissions are permitted for recovery.
+
 Read [offer-navigation.md](references/offer-navigation.md) for the existing
 Chase/Amex UI observations and verification rules. These are examples to adapt
 using live DOM inspection, not fixed selectors.
 
-- Activate available offers on the currently selected card. Do not switch
-  cards, purchase anything, change account settings, or accept unrelated terms.
+- Activate eligible ordinary offers only within the card scope above. Chase
+  card switching is authorized for the existing selected card and Amazon Visa;
+  Amex remains selected-card only. Apply the BofA classifications before clicks.
+  Do not purchase anything, change account settings, or accept unrelated terms.
 - Visible unactivated controls are authoritative; stale dedup history must not
   cause a visible available offer to be skipped.
 - Click each offer once; use the observed success state to verify it. A
@@ -197,8 +236,11 @@ using live DOM inspection, not fixed selectors.
   stop with accurate partial progress instead of claiming full completion.
 - Persist every verified activation with `journal.record(...)`; it updates the
   canonical run journal and the existing issuer index without inline shell code.
-  Chase key: `chase::<offer_id>`; Amex key: `<card_label>::<merchant>::<deal>`.
-- If one issuer is blocked, finish the available issuer and report partial
+  Chase key: `chase::<card_label-last4>::<offer_id>`; Amex key:
+  `<card_label>::<merchant>::<deal>`; BofA key:
+  `bofa::<observed_scope>::<offer_id>`. Record masked card labels only. Preserve
+  old Chase keys as history; they must not suppress another card’s offer.
+- If one issuer is blocked, finish the available issuers and report partial
   success. Keep all completed activations when later work fails.
 
 ## Finish and report
@@ -207,6 +249,11 @@ After a live run, sign out each successfully authenticated issuer using its
 observed Sign out/Log out control and verify the login wall. This is part of
 the user-authorized cards workflow. Do not improvise account-setting changes
 if the control cannot be found; report incomplete sign-out.
+Chase may land on its public logout page before a login form hydrates; the
+explicit visible "You have successfully signed out" confirmation on that
+official page is valid sign-out evidence. A missing password input alone is not.
+Persist `sign_out="verified"` exactly, with any explanatory text in a separate
+`sign_out_proof` field; the journal and maintenance checks use the exact status.
 
 Finalize the journal as `completed`, `partial`, or `failed`, with end time,
 per-issuer activation counts, unresolved failures, and sign-out outcomes.
@@ -215,13 +262,17 @@ Delivery status belongs to Hermes's cron execution history; do not claim
 
 Return one concise roundup, keeping it below 3,800 UTF-16 units:
 
-- Date, Chase count and verified merchant/deal lines.
+- Date, Chase counts separated by card (explicitly Amazon/Prime Visa) and
+  verified merchant/deal lines.
+- BofA Alaska/Atmos count; distinguish activated, already automatic, timed
+  deals deferred until shopping, and link-required offers. Include newly found
+  targeted bonuses with observed spending threshold, cap, deadline, and card.
 - Amex selected card and count with verified merchant/deal lines.
 - Any blocked issuer, MFA action, unverified activation, cap, or sign-out issue.
 - A truthful total. If the list is long, keep totals and representative lines
   with “and N more activated offers”. If none are available, say nothing new.
 
-Always return an outcome, including both-issuer failure. Do not emit `[SILENT]`.
+Always return an outcome, including all-issuer failure. Do not emit `[SILENT]`.
 If the journal is anything other than `completed`, put `[CRON_FAILURE]` on
 the first line **by itself**, followed by the roundup. This includes partial
 activation, unresolved sign-out, persistence gaps, and turn-limit exhaustion.

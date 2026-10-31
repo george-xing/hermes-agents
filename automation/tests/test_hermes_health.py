@@ -32,6 +32,23 @@ class HealthTests(unittest.TestCase):
     def test_completed_scheduler_and_banks_are_healthy(self):
         self.assertEqual(health.assess(self.job(), journal=completed(), now=NOW)["issues"], [])
 
+    def test_bofa_is_required_when_declared_or_present(self):
+        data = completed()
+        data["required_issuers"] = ["chase", "amex", "bofa"]
+        self.assertIn("bofa_incomplete", health.card_issues(data))
+        data["issuers"]["bofa"] = {"status": "completed", "sign_out": "verified", "pending_offer": "example"}
+        self.assertIn("bofa_uncertain_click", health.card_issues(data))
+        data["issuers"]["bofa"].pop("pending_offer")
+        self.assertEqual(health.card_issues(data), [])
+        data.pop("required_issuers")
+        data["issuers"]["bofa"]["sign_out"] = "unverified"
+        self.assertIn("bofa_signout_unverified", health.card_issues(data))
+
+    def test_missing_amazon_coverage_is_not_healthy(self):
+        data = completed()
+        data["issuers"]["chase"].update(required_cards=["existing", "amazon"], cards={"existing": {"status": "completed"}})
+        self.assertIn("chase_card_coverage_incomplete", health.card_issues(data))
+
     def test_resolved_historical_failure_does_not_trigger_replay(self):
         data = completed()
         data["failures"] = [{"issuer": "chase", "reason": "sign-out not verified", "resolved": True}]
@@ -71,6 +88,18 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(health.latest_journal(directory)[1]["status"], "fresh")
             fresh.write_text("truncated")
             self.assertEqual(health.latest_journal(directory)[1]["status"], "invalid_journal")
+
+    def test_historical_cleanup_does_not_hide_newer_run(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            fresh = directory / "replacement.json"
+            fresh.write_text(json.dumps(completed()))
+            old = directory / "setup.json"
+            old.write_text(json.dumps({"status": "failed", "started_at": "2026-09-29T11:49:00Z"}))
+            import os
+            os.utime(fresh, (1, 1))
+            self.assertEqual(health.latest_journal(directory)[0], fresh)
+            self.assertEqual(health.card_issues(health.latest_journal(directory)[1]), [])
 
     def test_retries_require_new_code_and_have_daily_cap(self):
         entry = {"role": "twitter", "issues": ["scheduler_failed"]}

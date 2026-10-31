@@ -49,7 +49,7 @@ Parse the response value (a JSON string). Branch:
 
 **Step 2.2 — The click loop.** Up to `AMEX_MAX_CLICKS` (default 500):
 
-The Add button has `[data-testid="merchantOfferListAddButton"]` with empty innerText (icon button). To identify *which* offer the next button corresponds to, walk up the parent chain from the button to the per-offer container (the div with `border` in its class). Lines of that container's innerText: line 0 = merchant, line 1 = deal description.
+The Add button has `[data-testid="merchantOfferListAddButton"]` with empty innerText (icon button). To identify *which* offer the next button corresponds to, walk up the parent chain from the button to the per-offer container (the div with `border` in its class). Do not index raw innerText lines directly: a leading NEW badge shifts merchant and deal. Return the selected container's full visible text from the read-only probe, then call `cards_journal.parse_amex_offer(text)` in Python before reserving or clicking. Import it alongside Journal from `~/dotfiles/cards/bin`. It strips known leading badges and rejects incomplete metadata. Inspect its merchant/deal against the live tile before the first click. Use the returned fields for both the reservation key and recorded activation; do not independently reparse them after clicking. If metadata is ambiguous, stop before clicking and inspect the DOM read-only.
 
 **Each iteration** extracts the live offer, clicks once, and verifies the
 visible state transition:
@@ -66,10 +66,7 @@ EXPRESSION='JSON.stringify((() => {
     if (cls.includes("border")) break;
     p = p.parentElement;
   }
-  const text = (p?.innerText || "").trim();
-  const lines = text.split("\n").map(s => s.trim()).filter(Boolean);
-  if (lines[0]?.toUpperCase() === "NEW") lines.shift();
-  return { merchant: lines[0] || "<unknown>", deal: lines[1] || "" };
+  return { text: (p?.innerText || "").trim() };
 })())' \
 /Users/pattybot/dotfiles/cards/bin/lib/cdp-eval.sh
 ```
@@ -109,6 +106,14 @@ stop the Amex section without retrying that click.
 Stop conditions: hit `AMEX_MAX_CLICKS`, ran out of buttons, OR encountered a verification failure.
 
 ### 3. Activate Chase offers
+
+For card selection, first read additional-cards.md. Run this loop separately
+for the original selected Chase card and Amazon/Prime Visa, verifying the
+selected masked card after every return to the hub. Reset counters/visited IDs
+per card; reservation and journal keys must include the card label and last four.
+If both scopes are the same card, process it once. Never mark Chase complete
+until both scopes were checked. The historical loop below describes navigation,
+not permission to ignore card identity.
 
 Chase's current flow is hub tile → automatic activation page → hub. Chase can
 also log you out of the offers area even when `/dashboard/overview` remains
@@ -182,6 +187,22 @@ Before clicking, capture:
 - merchant and deal from the tile's nonempty text lines, stripping badge lines
   such as `New`, `Exclusive`, `Expiring soon`, and time-remaining lines; and
 - the numeric `Added offers` counter from the page text.
+
+Use `cards_journal.parse_chase_offer(tile_text)` before reserving the click.
+It handles actual newlines and badges. Do not recreate splitting or reward
+parsing inside nested source strings. The 2026-10-30 Prime Visa test exposed
+double-escaped newline and regex patterns in generated loops.
+
+For activated-page verification, import
+`cards_journal.chase_activation_verified`. Obtain the small read-only probe
+`js("({url:location.href,body:document.body?.innerText || ''})")` and pass it,
+the captured offer ID, and the verified masked card label to the helper. It
+requires the exact activated offer URL, visible Added to card text, and the
+correct card label. Do not embed escaped JavaScript word-boundary regexes in
+nested Python source. If the helper returns false, continue read-only polling
+and the hub fallback below; never repeat the activation click. Validate the
+helper against one real confirmation before starting a batch, and checkpoint
+every verified activation. A parse failure before reservation is not a click.
 
 Mark the ID visited in memory **before** clicking. Scroll the tile into view,
 click exactly once, and wait the randomized 3–6 second cadence.

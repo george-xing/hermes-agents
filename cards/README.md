@@ -1,6 +1,6 @@
 # Hermes + 1Password card offers example
 
-Hermes uses a dedicated Chrome profile to activate available Chase and Amex
+Hermes uses a dedicated Chrome profile to activate available Chase (including Amazon Visa), Amex, and Bank of America Alaska/Atmos
 offers, records each verified activation, signs out, and delivers a roundup.
 The active implementation is the [Hermes skill](.hermes/skills/credit-card-offers/SKILL.md).
 The former deterministic login/offer scripts, keepalive and Keychain

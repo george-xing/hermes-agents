@@ -12,7 +12,9 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
+from urllib.parse import unquote
 
 
 def now():
@@ -35,6 +37,40 @@ def atomic_json(path, value):
             os.unlink(name)
 
 
+def parse_amex_offer(text):
+    """Parse observed tile text before reserving a click (no bank actions)."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    while lines and lines[0].casefold() in {"new", "exclusive", "expiring soon"}:
+        lines.pop(0)
+    if len(lines) < 2 or lines[1].casefold() in {"details", "offer details", "add to card", "added to card"}:
+        raise ValueError("Amex tile missing merchant/deal; inspect read-only before clicking")
+    return {"merchant": lines[0], "deal": lines[1]}
+
+
+def parse_chase_offer(text):
+    """Parse a visible Chase tile before reserving a click."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [line for line in lines
+             if line.casefold() not in {"new", "exclusive", "expiring soon"}
+             and not re.fullmatch(r"\d+\s*(?:d|h|days?|hours?)\s+left", line, re.I)]
+    if len(lines) < 2 or not re.search(r"(?:\$\d|\d+(?:\.\d+)?%).*\bback\b", lines[1], re.I):
+        raise ValueError("Chase tile missing merchant/deal; inspect before reserving or clicking")
+    return {"merchant": lines[0], "deal": lines[1]}
+
+
+def chase_activation_verified(probe, offer_id, card_label):
+    """Validate a small read-only DOM probe without nested JS regex escaping."""
+    url = unquote(probe.get("url", ""))
+    marker = "/offer-activated/"
+    if marker not in url:
+        return False
+    actual_id = url.split(marker, 1)[1].split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    body = " ".join(probe.get("body", "").split()).casefold()
+    expected_card = " ".join(card_label.split()).casefold()
+    return (actual_id == offer_id and bool(expected_card)
+            and "added to card" in body and expected_card in body)
+
+
 class Journal:
     def __init__(self, path):
         self.path = Path(path).expanduser()
@@ -52,13 +88,19 @@ class Journal:
             data["updated_at"] = now()
             atomic_json(self.path, data)
 
-    def prepare(self):
+    def prepare(self, required_issuers=None):
         """Exercise the actual persistence path before any bank mutation."""
-        with self.transaction():
-            pass
+        if required_issuers is not None:
+            required_issuers = list(required_issuers)
+            if not required_issuers or any(n not in ("chase", "amex", "bofa") for n in required_issuers):
+                raise ValueError("Invalid required issuers")
+        with self.transaction() as data:
+            if required_issuers is not None:
+                # Reopening a run must not silently drop an unfinished issuer.
+                data["required_issuers"] = sorted(set(data.get("required_issuers", ("chase", "amex"))) | set(required_issuers))
 
     def issuer(self, name, **fields):
-        if name not in ("chase", "amex"):
+        if name not in ("chase", "amex", "bofa"):
             raise ValueError("Unknown issuer")
         with self.transaction() as data:
             current = data["issuers"].setdefault(name, {"login_submissions": 0, "status": "running"})
@@ -85,7 +127,7 @@ class Journal:
 
     def record(self, name, key, **offer):
         # Whitelist nonsecret metadata; callers cannot accidentally dump tool results.
-        allowed = {k: offer[k] for k in ("merchant", "deal", "offer_id", "card_id", "proof") if k in offer}
+        allowed = {k: offer[k] for k in ("merchant", "deal", "offer_id", "card_id", "proof", "expires_at", "minimum_spend", "reward_cap", "offer_type") if k in offer}
         with self.transaction() as data:
             issuer = data["issuers"][name]
             if issuer.get("pending_offer") not in (None, key):
@@ -119,7 +161,9 @@ class Journal:
                 data["issuers"].get(name, {}).get("status") == "completed"
                 and data["issuers"][name].get("sign_out") == "verified"
                 and not data["issuers"][name].get("pending_offer")
-                for name in ("chase", "amex")
+                and all(data["issuers"][name].get("cards", {}).get(card, {}).get("status") == "completed"
+                        for card in data["issuers"][name].get("required_cards", []))
+                for name in set(data.get("required_issuers", ("chase", "amex"))) | set(data["issuers"])
             )
             data["status"] = "completed" if complete else "partial"
             data["ended_at"] = now()

@@ -1,6 +1,6 @@
 ---
 name: credit-card-offers
-description: Run the Hermes-managed Chase and Amex offer workflow using the AI agents 1Password vault and the existing cards browser.
+description: Run the Hermes-managed Chase (including Amazon Visa), Amex, and Bank of America Alaska/Atmos offer workflow using the AI agents 1Password vault and the existing cards browser.
 ---
 
 # Credit Card Offers

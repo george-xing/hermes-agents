@@ -7,7 +7,7 @@ persistence, sign-out, and reporting, and
 
 Hermes runs the daily 03:00 America/New_York cron job and sends its final
 roundup to Telegram. The existing cards Chrome daemon remains on port 19223.
-Hermes accesses the Chase/Amex items in the **AI agents** 1Password vault using
+Hermes accesses the Chase/Amex/BofA items in the **AI agents** 1Password vault using
 its existing service-account token through native `browser_vault_list` and
 `browser_vault_fill`. Bind each fill to the observed tab ID; Chase's same-origin
 login iframe also needs `frame_selector`. Hermes enters the returned nonsecret

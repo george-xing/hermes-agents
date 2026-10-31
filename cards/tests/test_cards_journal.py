@@ -56,6 +56,45 @@ class JournalTests(unittest.TestCase):
             raise RuntimeError("interrupted")
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_new_workflow_requires_bofa_even_before_login(self):
+        self.j.prepare(required_issuers=("chase", "amex", "bofa"))
+        for name in ("chase", "amex"):
+            self.j.issuer(name, status="completed", sign_out="verified")
+        self.assertEqual(self.j.finish(), "partial")
+        self.j.prepare(required_issuers=("chase", "amex"))
+        self.assertEqual(self.j.finish(), "partial")
+        self.j.issuer("bofa", status="completed", sign_out="verified")
+        self.assertEqual(self.j.finish(), "completed")
+
+    def test_same_chase_offer_on_two_cards_is_recorded_separately(self):
+        for card in ("existing-1234", "amazon-5678"):
+            key = f"chase::{card}::offer-1"
+            self.j.reserve_offer("chase", key)
+            self.j.record("chase", key, card_id=card, offer_id="offer-1")
+        data = json.loads(self.path.read_text())
+        self.assertEqual(len(data["activations"]), 2)
+        self.assertEqual({a["card_id"] for a in data["activations"]}, {"existing-1234", "amazon-5678"})
+
+    def test_amazon_card_coverage_is_required_for_completion(self):
+        for name in ("chase", "amex"):
+            self.j.issuer(name, status="completed", sign_out="verified")
+        self.j.issuer("chase", required_cards=["existing", "amazon"], cards={"existing": {"status": "completed"}})
+        self.assertEqual(self.j.finish(), "partial")
+        self.j.issuer("chase", cards={name: {"status": "completed"} for name in ("existing", "amazon")})
+        self.assertEqual(self.j.finish(), "completed")
+
+    def test_bofa_pending_offer_and_signout_require_verification(self):
+        for name in ("chase", "amex", "bofa"):
+            self.j.issuer(name, status="completed", sign_out="verified")
+        self.j.reserve_offer("bofa", "bofa::alaska-1234::offer-1")
+        self.assertEqual(self.j.finish(), "partial")
+        self.j.record("bofa", "bofa::alaska-1234::offer-1", merchant="Example", expires_at="2026-12-31", offer_type="card_linked")
+        self.j.issuer("bofa", sign_out="unverified")
+        self.assertEqual(self.j.finish(), "partial")
+        self.j.issuer("bofa", sign_out="verified")
+        self.assertEqual(self.j.finish(), "completed")
+        self.assertTrue((Path(self.tmp.name) / "bofa-activated.json").exists())
+
     def test_later_verified_signout_resolves_only_its_transient_failure(self):
         with self.j.transaction() as data:
             data["failures"].append({"issuer": "chase", "reason": "sign-out not verified"})
