@@ -11,7 +11,7 @@ Runtime secrets remain outside Git:
 
 Intended runtime settings:
 
-- provider/model: `openai-codex` / `gpt-5.5`
+- provider/model: `openai-codex` / `gpt-6.1-terra` (the global `model.default`, so cron jobs without their own model use it too)
 - reasoning effort: `medium`
 - gateway streaming: enabled
 - local terminal cwd: `/Users/pattybot/.hermes/workspace`
