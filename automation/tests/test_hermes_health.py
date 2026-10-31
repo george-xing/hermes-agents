@@ -102,3 +102,15 @@ class HealthTests(unittest.TestCase):
                 repaired = health.source_fingerprint("agentmail")
                 self.assertEqual(repaired, health.source_fingerprint("agentmail"))
             self.assertNotEqual(missing, repaired)
+
+    def test_agentmail_fingerprint_tracks_repo_package_not_hermes_scripts(self):
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as hermes, \
+             patch.object(health, "REPO", Path(repo)), patch.object(health, "HERMES", Path(hermes)), \
+             patch.object(health, "version", return_value="2.0.6"):
+            (Path(repo) / "agentmail/bin").mkdir(parents=True)
+            (Path(hermes) / "scripts").mkdir()
+            before = health.source_fingerprint("agentmail")
+            (Path(hermes) / "scripts/agentmail_reconcile.py").write_text("shim")
+            self.assertEqual(before, health.source_fingerprint("agentmail"))
+            (Path(repo) / "agentmail/bin/agentmail_reconcile.py").write_text("fixed")
+            self.assertNotEqual(before, health.source_fingerprint("agentmail"))

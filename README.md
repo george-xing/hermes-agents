@@ -26,6 +26,13 @@ stow -t ~ -R twitter    # reinstall (idempotent refresh after layout changes)
   health/retry helpers, and the maintenance skill.
 - **[`doordash/`](doordash/hermes/README.md)** — DoorDash CLI skills, Hermes
   persona and macOS gateway setup notes, with owner confirmation for checkout.
+- **[`telegram/`](telegram/README.md)** — Standalone Telegram receiver that
+  answers allowlisted messages with a fresh `claude -p` run, plus its
+  LaunchAgent and healthcheck. Tokens and access policy stay local.
+- **[`agentmail/`](agentmail/README.md)** — AgentMail webhook reconciliation:
+  re-submits authenticated emails that the gateway missed. Installed by copying
+  a shim into `~/.hermes/scripts` (Hermes rejects symlinked cron scripts), not
+  by `stow`.
 
 These are examples from a personal Mac setup. Adapt machine paths, browser
 profiles, delivery targets, and private credential configuration before use.
