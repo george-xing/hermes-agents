@@ -12,7 +12,8 @@ verification, and reporting. Its source is
 
 The daily schedule is a Hermes cron job at 03:00 America/New_York. The old
 launchd daily job, `cards-fire.sh`, deterministic login/offer scripts, and
-Keychain provisioning are retired. Do not re-enable or invoke them.
+Keychain provisioning are retired; the scripts were removed from the repo
+(see git history). Do not re-enable or invoke them.
 
 For setup/status, read `references/runbook.md`. For an explicitly requested
 live run, identify the cards job with `hermes cron list` and invoke

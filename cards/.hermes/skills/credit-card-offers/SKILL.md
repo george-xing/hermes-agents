@@ -12,8 +12,8 @@ metadata:
 Hermes owns navigation, login decisions, offer activation, and sign-out. The
 user authorized this daily workflow and use of the Chase/Amex Login items in
 **AI agents**. The old standalone login script, Keychain token, Codex wrapper,
-and deterministic offers fallback are retired. Do not invoke `cards-fire.sh`,
-`cards-auth.py`, `cards-offers.py`, or either 1Password provisioner for this job.
+and deterministic offers fallback are retired and were removed from the repo
+(see git history). `cards-fire.sh` only prints migration guidance; do not invoke it.
 
 The 3:00 a.m. America/New_York Hermes cron job delivers your final response to
 Telegram automatically. Return the roundup; do not separately send a Telegram

@@ -9,5 +9,5 @@
 ^/CLAUDE\.md$
 
 # Design specs and brainstorming artifacts live in-package only; never
-# symlink into $HOME. Discoverable via /docs/superpowers/specs/ in the repo.
+# symlink into $HOME.
 ^/docs/
