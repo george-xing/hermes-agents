@@ -113,9 +113,23 @@ Official destinations:
 
 - Chase: `https://secure.chase.com/web/auth/dashboard?navKey=reviewMerchantOffers`
 - Amex: `https://global.americanexpress.com/offers/eligible`
-- BofA: `https://www.bankofamerica.com/` → official sign-in → Rewards & Deals /
-  cash back deals. This route requires live discovery; no BofA selectors have
-  been verified. Stop that issuer if the native vault Login item is unavailable.
+- BofA: `https://www.bankofamerica.com/` homepage sign-in widget → Rewards &
+  Deals / cash back deals. The login widget selectors were observed live on
+  2026-10-30/31 (see additional-cards.md); the Deals route still needs live
+  discovery. The saved Login item allows only `https://www.bankofamerica.com`,
+  so fill on the homepage, never on `secure.bankofamerica.com`. Stop that
+  issuer if the native vault Login item is unavailable.
+
+## Issuer order: strictly one at a time
+
+Process issuers sequentially, in the order Chase → Amex → BofA. For each one:
+fresh navigation, fill-ready check, username, native fill, one submit, offers,
+sign-out, and a recorded outcome (`completed`, or a blocked/partial status)
+**before** the next issuer's login submit. Never submit logins for several
+issuers in one browser_exec block or loop, and keep at least 60 seconds between
+login submits of different issuers. `journal.reserve_login` enforces both and
+`journal.login_wait_seconds(issuer)` returns the remaining wait. Batch
+read-only probes, not logins.
 
 Navigate each issuer to its protected offers destination and inspect current
 page state. If already authenticated, proceed to offers. Otherwise inspect
@@ -146,6 +160,14 @@ not the old `.claude` routing folder. Read [native-login.md](references/native-l
 its native input setter and input/change events for the observed username
 control on each bank, then verify only a boolean that it matches the identifier
 returned by `browser_vault_list`. Keep the password in native vault fill.
+Before the username entry, run that reference's **fill-ready** block on every
+issuer: it activates the tab and waits until the observed username and
+password inputs pass the same visibility test `browser_vault_fill` applies
+(computed display/visibility, enabled, has client rects). Do not use
+`offsetWidth`/`getClientRects` alone as a visibility check. The BofA-only
+fade-in reveal in that block is the documented workaround for the hidden
+lock-screen window; if fields stay hidden, stop that issuer as
+`blocked_fields_hidden` without retrying.
 The same reference shows the verified DOM button click for submission; use it
 instead of coordinate clicks for these known login controls.
 Then invoke native vault fill with the observed handle and tab:
@@ -154,7 +176,7 @@ Then invoke native vault fill with the observed handle and tab:
 {"handle":"op:OBSERVED_ITEM_ID","target_id":"OBSERVED_TAB_ID","frame_selector":"#logonbox"}
 ```
 
-For Amex's top-level form omit `frame_selector`. Before submission require
+For Amex's top-level form and the BofA homepage widget omit `frame_selector`. Before submission require
 native `success: true`, one password field filled, and the expected `target_id`.
 Switch back to that exact ID in `browser_exec` and verify the expected form and
 origin without reading input values. A refusal means inspect routing and form
@@ -178,7 +200,10 @@ login submission. Use `document.body?.innerText || ''` in status probes.
 
 If SMS, push approval, CAPTCHA, device verification, password reset, or
 ambiguous MFA appears, stop that issuer and report the action needed. Do not
-change authentication settings. Continue the other issuers independently.
+choose a verification method, request a code, or call
+`browser_vault_enter_code`; record the page as described under "Identity
+verification pages" in native-login.md, set `blocked_mfa`, and continue the
+next issuer after the spacing above. Do not change authentication settings.
 Clear filled inputs before taking an authentication screenshot; otherwise
 omit the screenshot. Never capture HTML or input values containing credentials.
 
@@ -245,9 +270,10 @@ using live DOM inspection, not fixed selectors.
 
 ## Finish and report
 
-After a live run, sign out each successfully authenticated issuer using its
-observed Sign out/Log out control and verify the login wall. This is part of
-the user-authorized cards workflow. Do not improvise account-setting changes
+Sign out each successfully authenticated issuer as soon as its offers (and any
+due bonus review) are done, before the next issuer's login, using its observed
+Sign out/Log out control, and verify the login wall. This is part of the
+user-authorized cards workflow. Do not improvise account-setting changes
 if the control cannot be found; report incomplete sign-out.
 Chase may land on its public logout page before a login form hydrates; the
 explicit visible "You have successfully signed out" confirmation on that
@@ -269,6 +295,12 @@ Return one concise roundup, keeping it below 3,800 UTF-16 units:
   targeted bonuses with observed spending threshold, cap, deadline, and card.
 - Amex selected card and count with verified merchant/deal lines.
 - Any blocked issuer, MFA action, unverified activation, cap, or sign-out issue.
+  For an identity challenge use exactly: "<Issuer> needs a one-time
+  verification; see thread." followed by the recorded page type and options,
+  e.g. "(Amex two-step verification: method choice, Text Message / Email)". Add
+  "Tick 'remember this device' when completing it." only when the page offered
+  that option. For hidden fields use "<Issuer> login fields stayed hidden; no
+  login was submitted."
 - A truthful total. If the list is long, keep totals and representative lines
   with “and N more activated offers”. If none are available, say nothing new.
 

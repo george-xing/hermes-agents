@@ -71,6 +71,20 @@ def chase_activation_verified(probe, offer_id, card_label):
             and "added to card" in body and expected_card in body)
 
 
+# Back-to-back logins at several banks from one browser look automated and coincided with the
+# first Amex/BofA identity challenges (2026-10-30), so submits are spaced and serialized.
+LOGIN_SPACING_SECONDS = 60
+
+
+def _login_wait(data, name):
+    latest = max((datetime.fromisoformat(other["submission_recorded_at"])
+                  for other_name, other in data["issuers"].items()
+                  if other_name != name and other.get("submission_recorded_at")), default=None)
+    if latest is None:
+        return 0.0
+    return max(0.0, LOGIN_SPACING_SECONDS - (datetime.now(timezone.utc) - latest).total_seconds())
+
+
 class Journal:
     def __init__(self, path):
         self.path = Path(path).expanduser()
@@ -105,15 +119,36 @@ class Journal:
         with self.transaction() as data:
             current = data["issuers"].setdefault(name, {"login_submissions": 0, "status": "running"})
             if "login_submissions" in fields:
-                raise ValueError("Use reserve_login to record submissions")
+                # Declaring the initial zero is harmless; only reserve_login may count a submission.
+                if fields.pop("login_submissions") != current.get("login_submissions", 0):
+                    raise ValueError("Use reserve_login to record submissions")
             current.update(fields)
+
+    def login_wait_seconds(self, name):
+        """Seconds before ``name`` may submit, keeping issuer logins at least LOGIN_SPACING_SECONDS apart."""
+        data = json.loads(self.path.read_text()) if self.path.exists() else {"issuers": {}}
+        return _login_wait(data, name)
 
     def reserve_login(self, name):
         with self.transaction() as data:
             issuer = data["issuers"][name]
             if issuer.get("login_submissions", 0):
                 raise ValueError("Login submission already reserved for this run")
+            # One issuer at a time: an earlier login must have a recorded outcome before the next submit.
+            for other_name, other in data["issuers"].items():
+                if other_name != name and other.get("login_submissions") and other.get("status", "running") == "running":
+                    raise ValueError(f"Record the {other_name} outcome (status) before another issuer's login")
+            wait = _login_wait(data, name)
+            if wait > 0:
+                raise ValueError(f"Wait {wait:.0f}s before this login submit; nothing was reserved or clicked")
             issuer.update(login_submissions=1, submission_recorded_at=now())
+
+    def abandon(self, reason):
+        """Close a journal that never reached bank actions (e.g. a failed setup call) without claiming success."""
+        with self.transaction() as data:
+            if any(i.get("login_submissions") or i.get("attempted_offers") for i in data["issuers"].values()):
+                raise ValueError("Journal has bank actions; finish it instead of abandoning")
+            data.update(status="abandoned", abandoned_reason=reason, ended_at=now())
 
     def reserve_offer(self, name, key):
         """Persist click intent first. An uncertain click must only be probed."""
@@ -172,8 +207,13 @@ class Journal:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["prepare", "finish"])
+    parser.add_argument("action", choices=["prepare", "finish", "abandon"])
     parser.add_argument("path", type=Path)
+    parser.add_argument("--reason", default="setup failed before bank actions")
     args = parser.parse_args()
     journal = Journal(args.path)
-    print(journal.prepare() if args.action == "prepare" else journal.finish())
+    if args.action == "abandon":
+        journal.abandon(args.reason)
+        print("abandoned")
+    else:
+        print(journal.prepare() if args.action == "prepare" else journal.finish())

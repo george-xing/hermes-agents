@@ -53,6 +53,34 @@ navigation. Never inject bank credentials into a partner site. If a separate
 enrollment, account link, location permission, or unrelated consent is required,
 report the action needed. Do not change preferences to expose extra offers.
 
+### BofA login (observed 2026-10-30/31)
+
+- Page: `https://www.bankofamerica.com/` homepage sign-in widget
+  (`#signin-container` → `#signin-form`). There is no `<form>` element around it
+  and no iframe. User ID `#oid` (text, label "User ID", `autocomplete=off`),
+  password `#pass` (`type=password`, label "Password"), submit
+  `#secure-signin-submit` (`type=button`, empty text). The native classifier
+  scores `#pass` as current-password; `#oid` is typed with the setter.
+- Saved-user-ID mode: after the first login the profile holds `gl_prefill`
+  and device cookies (`UKEY`, `ctd`). The widget then shows "Log in with a
+  different user ID" (`#login-diff-oid-link`). Passkey controls
+  (`#passkey-secure-signin`, `#passkey-signin-link`) exist but are hidden; do
+  not use passkey or switch modes.
+- Hidden-window trap: the homepage nests four `#top` containers. The inner
+  `#top.sparta-layout.flex-grid-layout.fade-in` wrapping the widget stays
+  `opacity:0; visibility:hidden` while the window is not rendered (lock
+  screen), so `browser_vault_fill` reports "No login form fields were found".
+  Use the fill-ready block in native-login.md; activation alone did not
+  reveal it on 2026-10-31, but removing that `fade-in` class did, and then
+  `#oid`/`#pass` passed the vault inspector.
+- Origin: the 1Password "bankofamerica.com" Login item saves only
+  `https://www.bankofamerica.com/`. Never fill on `secure.bankofamerica.com`
+  (origin_mismatch); do not add origins.
+- After submit, the first login from this browser went to
+  `secure.bankofamerica.com/auth/signon/#/authcode` ("Get authorization code",
+  Text message / Phone call). That is `blocked_mfa`; never request the code in
+  a scheduled run. It was completed by hand on 2026-10-30.
+
 Live observation, 2026-10-30: the existing user-verified BofA session exposed
 an Atmos Rewards Ascent Visa Signature account. Accounts overview → Rewards &
 Deals → Cash Back Deals reached `deals.merchant-rewards.com` through the bank's
