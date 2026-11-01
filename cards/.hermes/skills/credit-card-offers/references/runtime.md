@@ -40,9 +40,26 @@ legacy index. If index persistence fails, stop further clicks; the verified
 record remains available for repair. Do not replay an uncertain click.
 
 Handle each issuer independently but finish its activation loop, sign-out, and
-recorded outcome before the next issuer's login submit. With 40 model turns, batch work within each issuer and
+recorded outcome before the next issuer's login submit. With 80 model turns, batch work within each issuer and
 reserve turns for all three issuers plus sign-out/finalization. Never omit a
 card or issuer and claim completion; persist partial coverage if time runs out.
+
+```python
+if not journal.budget_allows("bofa", turns_used):  # Records skipped_budget.
+    status = journal.close("turn budget: bofa not started")
+```
+
+`budget_allows` refuses an issuer when fewer than `ISSUER_TURN_RESERVE` turns
+remain. `skip(issuer, reason)` records any other deliberate skip; both refuse
+once that issuer's login was submitted. `close(reason)` marks every issuer
+still `running` as `skipped_budget` (no login) or `partial` (after a login),
+records why, and returns `finish()`'s status. It refuses a journal that is no
+longer `running`. A stuck journal from an interrupted run can be closed from a
+terminal with `cards_journal.py close <journal> --reason "<why>"`.
+
+Activation loops end themselves at `cards_journal.LOOP_SECONDS`: Hermes
+abandons any tool call after 420 seconds but the daemon keeps running it, so a
+timed-out loop must never overlap a new one. Resume with another bounded call.
 Use the named native browser session's Python loop to batch work. Test syntax
 before any side effects; Python uses `"log in" in title.lower()`, never `/log in/i`.
 

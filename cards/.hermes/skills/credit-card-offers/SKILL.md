@@ -244,21 +244,41 @@ using live DOM inspection, not fixed selectors.
   failed read-only probe may be retried within the verification window;
   an activation click must not be retried.
 - Pause a randomized 3–6 seconds between activations; cap at 500 per issuer.
-- This Hermes installation allows 40 agent turns. Batch read-only probes and,
-  after inspecting the current DOM, write a temporary run-specific CDP loop
-  for offer activation instead of spending several agent turns per offer.
+- This Hermes installation allows 80 agent turns (`agent.max_turns`). One turn
+  is one model response, however many tool calls it batches; count yours.
+  Batch read-only probes and, after inspecting the current DOM, write a
+  temporary run-specific CDP loop for offer activation instead of spending
+  several agent turns per offer.
   Import the maintained `cards_journal.Journal` helper from `runtime.md`;
   reserve every click before execution and record every verified iteration
   before the next click. Compile Python loop source before executing it. Keep
   JavaScript expressions inside `js(...)`; Python conditionals use Python
-  expressions, never JavaScript regex literals. Do not wait for a
-  batch to return: a timeout or final probe error would lose its progress.
+  expressions, never JavaScript regex literals.
   The loop must retain one-click verification, randomized waits, and
-  stop-on-failure behavior. It may run as a
-  terminal background process with progress polling. Do not reuse the retired
-  deterministic driver or include credentials in the temporary script.
-  Reserve enough turns to sign out and report; if the budget is nearly spent,
-  stop with accurate partial progress instead of claiming full completion.
+  stop-on-failure behavior. Do not reuse the retired deterministic driver or
+  include credentials in the temporary script.
+- **Time-box every activation loop.** Hermes ends each tool call after 420
+  seconds even when `browser_exec` is given a larger `timeout_s`, and the
+  browser daemon keeps executing the abandoned code. Run each loop in one
+  `browser_exec` call with `timeout_s=420` and an internal deadline of
+  `cards_journal.LOOP_SECONDS` (330 s, about 60 offers): check the deadline
+  before reserving each click, stop with `stop="deadline"`, and print the
+  counts. If the card is not exhausted, call the same loop again; it resumes
+  from the visible tiles. Never sleep-poll a loop or run it in the background.
+  If a call still times out, read the run journal once with `read_file`: the
+  deadline means the loop has already stopped. A key in `attempted_offers`
+  without a recorded activation is an uncertain click: probe it read-only and
+  never click it again.
+- **Budget the issuers.** Before each issuer's fresh navigation, call
+  `journal.budget_allows(issuer, turns_used)`. When fewer than
+  `ISSUER_TURN_RESERVE` (15) turns remain it records `skipped_budget` and
+  returns False: start no login for that issuer or any later one. By turn 74,
+  stop bank work, call `journal.close(reason)`, and report. `close` records
+  every unfinished issuer (`skipped_budget` without a login, `partial` after
+  one) and finalizes the journal, so a run never ends `running`.
+- Cron runs have nobody to approve flagged commands. Never use `python3 -c`,
+  `-e` flags, interpreters fed by pipes, or `ps` pipelines in `terminal`. Put
+  inspection code in `browser_exec` Python and read files with `read_file`.
 - Persist every verified activation with `journal.record(...)`; it updates the
   canonical run journal and the existing issuer index without inline shell code.
   Chase key: `chase::<card_label-last4>::<offer_id>`; Amex key:
@@ -283,6 +303,10 @@ Persist `sign_out="verified"` exactly, with any explanatory text in a separate
 
 Finalize the journal as `completed`, `partial`, or `failed`, with end time,
 per-issuer activation counts, unresolved failures, and sign-out outcomes.
+Use `journal.finish()` after every issuer has an outcome, or
+`journal.close(reason)` when the turn budget or an error leaves issuers
+unfinished. A `skipped_budget` issuer is reported as "<Issuer> was skipped:
+not enough turns left; no login was submitted."
 Delivery status belongs to Hermes's cron execution history; do not claim
 `telegramOk` or mark a message delivered before the scheduler sends it.
 
