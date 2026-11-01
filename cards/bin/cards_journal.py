@@ -71,6 +71,34 @@ def chase_activation_verified(probe, offer_id, card_label):
             and "added to card" in body and expected_card in body)
 
 
+def chase_card_selected(probe, card_label):
+    """The Choose account control, not page text, proves which card the hub shows."""
+    selected = " ".join((probe.get("selected") or "").split()).casefold()
+    return bool(card_label) and selected == " ".join(card_label.split()).casefold()
+
+
+def chase_card_hub(url):
+    """Card-scoped hub URL to return to after each activation.
+
+    The generic navKey hub reopens Chase's default card, so on 2026-11-01 every
+    Prime Visa iteration after the first failed its card check.
+    """
+    if "/merchantOffers/offer-hub" not in url or not re.search(r"[?&]accountId=\d+", url):
+        raise ValueError("Capture the hub URL after selecting the card; it must carry accountId")
+    return url
+
+
+# Hermes agent.max_turns in ~/.hermes/config.yaml. One turn is one model response,
+# however many tool calls it batches.
+MAX_TURNS = 80
+# Turns one issuer needs end to end: fresh navigation, fill, submit, offers, sign-out, outcome.
+ISSUER_TURN_RESERVE = 15
+# Hermes ends every tool call after 420s (timeouts.tools.sequential_call) whatever
+# browser_exec's timeout_s says, and the daemon keeps running the abandoned code.
+# Activation loops stop themselves before that and the next call resumes.
+LOOP_SECONDS = 330
+
+
 # Back-to-back logins at several banks from one browser look automated and coincided with the
 # first Amex/BofA identity challenges (2026-10-30), so submits are spaced and serialized.
 LOGIN_SPACING_SECONDS = 60
@@ -150,6 +178,34 @@ class Journal:
                 raise ValueError("Journal has bank actions; finish it instead of abandoning")
             data.update(status="abandoned", abandoned_reason=reason, ended_at=now())
 
+    def budget_allows(self, name, turns_used, max_turns=MAX_TURNS, reserve=ISSUER_TURN_RESERVE):
+        """Before an issuer's login: record it as skipped when the remaining turns cannot finish it."""
+        remaining = max_turns - turns_used
+        if remaining >= reserve:
+            return True
+        self.skip(name, f"{remaining} turns left before {name} login; an issuer needs {reserve}")
+        return False
+
+    def skip(self, name, reason, status="skipped_budget"):
+        with self.transaction() as data:
+            issuer = data["issuers"].setdefault(name, {"login_submissions": 0, "status": "running"})
+            if issuer.get("login_submissions"):
+                raise ValueError("Login already submitted; record its real outcome instead of skipping")
+            issuer.update(status=status, skipped_reason=reason)
+            data["failures"].append({"issuer": name, "reason": status, "detail": reason})
+
+    def close(self, reason, unstarted_status="skipped_budget"):
+        """Finalize an interrupted run: unfinished issuers become skipped (no login) or partial."""
+        with self.transaction() as data:
+            if data["status"] != "running":
+                raise ValueError(f"Journal is already {data['status']}")
+            for name in sorted(set(data.get("required_issuers", ("chase", "amex"))) | set(data["issuers"])):
+                issuer = data["issuers"].setdefault(name, {"login_submissions": 0, "status": "running"})
+                if issuer.get("status", "running") == "running":
+                    issuer["status"] = "partial" if issuer.get("login_submissions") else unstarted_status
+                    data["failures"].append({"issuer": name, "reason": issuer["status"], "detail": reason})
+        return self.finish()
+
     def reserve_offer(self, name, key):
         """Persist click intent first. An uncertain click must only be probed."""
         with self.transaction() as data:
@@ -207,13 +263,15 @@ class Journal:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["prepare", "finish", "abandon"])
+    parser.add_argument("action", choices=["prepare", "finish", "abandon", "close"])
     parser.add_argument("path", type=Path)
-    parser.add_argument("--reason", default="setup failed before bank actions")
+    parser.add_argument("--reason")
     args = parser.parse_args()
     journal = Journal(args.path)
     if args.action == "abandon":
-        journal.abandon(args.reason)
+        journal.abandon(args.reason or "setup failed before bank actions")
         print("abandoned")
+    elif args.action == "close":
+        print(journal.close(args.reason or "run ended before the journal was finalized"))
     else:
         print(journal.prepare() if args.action == "prepare" else journal.finish())

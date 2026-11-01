@@ -24,6 +24,12 @@ do not sign into Amazon or treat the Synchrony Amazon Store Card as this card.
 2. Finish that card's offers, then use the observed Choose account control to
    select the card labeled Amazon Visa / Prime Visa. Confirm the displayed card
    and last four before any offer click and after every return to the hub.
+   After selecting a card, capture `hub = chase_card_hub(js("location.href"))`
+   (its `offer-hub?accountId=` route) and return to that URL after each
+   activation; the generic `navKey=reviewMerchantOffers` URL reopens Chase's
+   default card. Check the card with `chase_card_selected(probe, card)`, where
+   `probe["selected"]` is the innerText of
+   `[data-testid=select-credit-card-account]`, not a search of page text.
    If both scopes identify the same card, process once and mark both covered.
    If absent or ambiguous, report Amazon coverage blocked, not zero offers.
 3. Use `chase::<masked-card-label-last4>::<offer_id>` for reservations, visited

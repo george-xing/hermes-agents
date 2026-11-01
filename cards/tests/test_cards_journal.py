@@ -141,3 +141,50 @@ class JournalTests(unittest.TestCase):
         with self.j.transaction() as data:
             data["failures"].append({"issuer": "amex", "reason": "persistence gap"})
         self.assertEqual(self.j.finish(), "partial")
+
+    def test_budget_gate_skips_an_issuer_it_cannot_finish(self):
+        self.j.prepare(required_issuers=("chase", "amex", "bofa"))
+        self.assertTrue(self.j.budget_allows("amex", journal.MAX_TURNS - journal.ISSUER_TURN_RESERVE))
+        self.assertFalse(self.j.budget_allows("bofa", journal.MAX_TURNS - journal.ISSUER_TURN_RESERVE + 1))
+        data = json.loads(self.path.read_text())
+        self.assertEqual(data["issuers"]["bofa"]["status"], "skipped_budget")
+        self.assertEqual(data["failures"][-1]["reason"], "skipped_budget")
+        self.j.reserve_login("chase")
+        with self.assertRaisesRegex(ValueError, "already submitted"):
+            self.j.skip("chase", "too late")
+
+    def test_close_finalizes_an_interrupted_run(self):
+        # 2026-11-01: the turn limit hit after BofA's vault fill and left the journal running.
+        self.j.prepare(required_issuers=("chase", "amex", "bofa"))
+        self.j.reserve_login("chase")
+        self.j.issuer("bofa", fields_ready=True)
+        self.assertEqual(self.j.close("turn budget exhausted before BofA login"), "partial")
+        data = json.loads(self.path.read_text())
+        self.assertEqual({n: i["status"] for n, i in data["issuers"].items()},
+                         {"chase": "partial", "amex": "skipped_budget", "bofa": "skipped_budget"})
+        self.assertEqual(len(data["failures"]), 3)
+        with self.assertRaisesRegex(ValueError, "already partial"):
+            self.j.close("again")
+
+    def test_close_keeps_recorded_outcomes(self):
+        self.j.prepare(required_issuers=("chase", "amex", "bofa"))
+        for name in ("chase", "amex"):
+            self.j.issuer(name, status="completed", sign_out="verified")
+        self.assertEqual(self.j.close("turn budget"), "partial")
+        data = json.loads(self.path.read_text())
+        self.assertEqual([f["issuer"] for f in data["failures"]], ["bofa"])
+        self.assertEqual(data["issuers"]["chase"]["status"], "completed")
+
+
+class ChaseCardTests(unittest.TestCase):
+    def test_selected_card_comes_from_the_switcher(self):
+        probe = {"selected": " Prime Visa (...0768)\n", "url": "https://secure.chase.com/x"}
+        self.assertTrue(journal.chase_card_selected(probe, "Prime Visa (...0768)"))
+        self.assertFalse(journal.chase_card_selected(probe, "Sapphire Reserve (...8423)"))
+        self.assertFalse(journal.chase_card_selected({"selected": None}, "Prime Visa (...0768)"))
+
+    def test_hub_url_must_be_card_scoped(self):
+        hub = "https://secure.chase.com/web/auth/dashboard#/dashboard/merchantOffers/offer-hub?accountId=627929588"
+        self.assertEqual(journal.chase_card_hub(hub), hub)
+        with self.assertRaises(ValueError):
+            journal.chase_card_hub("https://secure.chase.com/web/auth/dashboard?navKey=reviewMerchantOffers")

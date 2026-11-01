@@ -251,8 +251,12 @@ activated list. Only after the full read-only verification window and hub
 fallback both fail should you screenshot, record one failure, and stop the
 Chase section without retrying the click.
 
-Return to the hub with the official URL below, wait for visible
-`commerce-tile` elements, and repeat:
+Return to the card's own hub, captured with `cards_journal.chase_card_hub`
+right after the card was selected, wait for visible `commerce-tile` elements,
+confirm `cards_journal.chase_card_selected` against the Choose account control,
+and repeat. The official URL below opens Chase's default card. Use it only to
+reach the hub before choosing a card. On 2026-11-01, returning there after
+each Prime Visa activation failed every card check and cost about nine turns:
 
 ```bash
 TARGET_URL_SUBSTRING=chase.com \
