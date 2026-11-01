@@ -49,11 +49,13 @@ and reruns through the existing jobs with a three-attempt daily limit. Check
 `hermes cron list` for its current ID and status. See
 `~/dotfiles/automation/README.md` for installation and manual checks.
 
-The active cards workflow imports `cards/bin/cards_journal.py` in native
-`browser_exec`. This tests persistence before bank mutations and checkpoints
-each verified activation without inline shell snippets. Use the Hermes skill's
-`references/runtime.md`; partial outcomes carry `[CRON_FAILURE]` on a separate
-first line so the scheduler and maintenance agree about completion.
+The active cards workflow imports `cards/bin/cards_browser.py` (tab attach,
+login preparation and single submit, activation loops, sign-out, roundup) and
+`cards/bin/cards_journal.py` (atomic, secret-free run journal) in native
+`browser_exec`. `cards/bin/cards_preflight.py` checks CDP, closes orphaned
+`running` journals and creates the run's journal. Partial outcomes carry
+`[CRON_FAILURE]` on a separate first line so the scheduler and maintenance
+agree about completion. Tests: `python3 -m unittest discover -s cards/tests`.
 
 ## Retired components
 

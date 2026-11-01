@@ -28,13 +28,17 @@ The stowed Claude and Codex skill is a routing entry to the Hermes skill.
 Existing activation history remains under the stowed skill's `state/` folder;
 this private state is gitignored. New per-run journals go to `state/hermes-runs/`.
 
-Use live DOM inspection. Preserve the single-submission login rule, single-click
-activation verification, randomized 3–6 second cadence, partial progress, and
-explicit sign-out. Never use a different Chrome profile. MFA and challenges
+Steps with one right answer live in `bin/cards_browser.py` (tab attach, fresh
+login page and username, single reserved submit, Chase/Amex activation loops,
+sign-out, roundup); its `BANKS` table holds every selector and URL with the
+date it was observed. The agent handles only `needs_judgment` results, BofA
+offer classification and the monthly bonus review. Preserve the
+single-submission login rule, single-click activation verification,
+randomized 3–6 second cadence, partial progress, and explicit sign-out. Never use a different Chrome profile. MFA and challenges
 stop the affected issuer. Dry-runs make no bank mutations or outbound reports.
 
 Validation: request a Hermes dry-run with this skill for native vault metadata
 access and browser state. This does not prove authentication. Native fill and
 tab/frame isolation tests live in Hermes's `tests/tools/test_browser_vault*.py`;
-run them through its `scripts/run_tests.sh`. Historical cards helper tests
-describe retired implementations, not the active credential path.
+run them through its `scripts/run_tests.sh`. The cards helpers are tested
+offline against a fake browser harness: `python3 -m unittest discover -s cards/tests`.
