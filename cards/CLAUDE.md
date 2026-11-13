@@ -30,7 +30,8 @@ this private state is gitignored. New per-run journals go to `state/hermes-runs/
 
 Steps with one right answer live in `bin/cards_browser.py` (tab attach, fresh
 login page and username, single reserved submit, Chase/Amex activation loops,
-sign-out, roundup); its `BANKS` table holds every selector and URL with the
+dismissing known non-mutating pop-ups, opening BofA's Deals site with its visibility
+shim, sign-out, roundup); its `BANKS` table holds every selector and URL with the
 date it was observed. The agent handles only `needs_judgment` results, BofA
 offer classification and the monthly bonus review. Preserve the
 single-submission login rule, single-click activation verification,
@@ -42,3 +43,5 @@ access and browser state. This does not prove authentication. Native fill and
 tab/frame isolation tests live in Hermes's `tests/tools/test_browser_vault*.py`;
 run them through its `scripts/run_tests.sh`. The cards helpers are tested
 offline against a fake browser harness: `python3 -m unittest discover -s cards/tests`.
+`cards/tests/check_deals_shim.py` checks the Deals shim live in a throwaway cards Chrome tab
+against a local mock of the Deals site (no bank, no real site).

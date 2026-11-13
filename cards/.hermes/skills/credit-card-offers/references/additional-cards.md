@@ -6,12 +6,56 @@ covers the two parts that stay agentic.
 
 ## BofA: Alaska / Atmos Rewards
 
-After `submit_login` returns `signed_in`, use BofA's authenticated navigation:
-Accounts overview → Rewards & Deals → Cash Back Deals (BankAmeriDeals). On
-2026-10-30 that reached `deals.merchant-rewards.com`, but offer sections stayed
-"Loading" after 40 seconds and no activation was tested. Do not open the
-partner site directly, never inject bank credentials into it, and treat a
-loaded shell or a recognized card as neither eligibility nor zero offers.
+### Pop-ups after login
+
+BofA can put a modal over Accounts overview after login. From 2026-11-02 to
+11-05 it was "Welcome to Online Banking / It's time to review your customer
+profile information" with **Review your info** and **Remind me later**. Call
+`bank.clear_interstitial()` right after `submit_login` returns `signed_in`
+and again before each navigation to Rewards & Deals. It is read-only when
+nothing is showing (`clear`). For a known prompt it clicks one dismiss control
+("Remind me later" first, then "Not now", "Skip", "Close"/X), waits up to 10 s
+for the dialog to go, records `interstitial={title, action, dismissed}` and
+returns `dismissed`. An unknown pop-up, one offering only Review / Continue /
+Update / Confirm, or one that stays after the dismiss returns
+`interstitial_blocked`: it is recorded with its title and button labels,
+nothing is clicked, and you sign out. Never work around it with your own click;
+the roundup tells the user what to clear by hand. New prompts are added to
+`INTERSTITIAL_TITLES` in `cards_journal.py` only after the user agrees.
+
+### Offers
+
+After `submit_login` returns `signed_in`, call `bank.open_deals()`. It clears
+known pop-ups, follows only BofA's own Cash Back Deals redirect
+(`secure.bankofamerica.com/myaccounts/brain/redirect.go?target=offers…`) and
+waits up to 45 s for offer tiles (`[data-testid^="offerTile-"]`, Daily
+Essentials `small-upside-offer-` / `gridUpsideOfferTile-`) or an explicit empty
+state. It returns `{status, reached, tiles, sections_loading, reason}`.
+
+Why it needs a shim (diagnosed 2026-11-10): the cards Chrome sits behind the
+mini's lock screen, so its tabs are `hidden` and never render. The Deals site
+fetches each section's offers only once an IntersectionObserver reports the
+section on screen, and requestAnimationFrame never runs either. So every
+section stayed "Loading …" (2026-10-30, 11-05, 11-09) although the site had
+accepted the BofA session (it showed the reward balance). `open_deals()`
+registers `DEALS_SHIM_JS` on the bank tab's CDP session for this one
+navigation and removes it in `finally`. On `deals.merchant-rewards.com` and only
+while the page is hidden, it reports observed elements as visible and drives
+animation frames from a 16 ms timer. It overrides nothing else and makes no
+network or DOM changes. `js(...)` clicks on BofA's menu links did not navigate
+(2026-11-09); never navigate there by hand.
+
+The partner site (BankAmeriDeals, Accounts overview → Rewards & Deals → Cash
+Back Deals) is reached only through that redirect. Do not open it directly,
+never inject bank credentials into it, and treat a loaded shell or a recognized
+card as neither eligibility nor zero offers.
+
+Activation on the Deals site has not been verified live yet. Its API activates
+with `PUT /activate-offer/<id>` behind an "Activate" button that turns into
+"Activated". A tile opens the offer details. Inspect read-only first, then use
+`activate_one` with a `verified_js` that reads that offer's DOM state
+("Activated" on its own control). Never wait on animations.
+
 Alaska branding may appear as Atmos Rewards: verify the card and masked last
 four. Travel merchants may exclude travel co-branded cards. If enrollment,
 account linking, location permission or unrelated consent is required, report
@@ -45,6 +89,9 @@ print(bank.activate_one("bofa::<masked card>::<offer id>", "<observed button sel
 It reserves the key, clicks once, waits 3–6 s and polls 15 s. Stop on any
 status other than `verified`. Without a stable offer id, build the key from
 observed merchant, deal, expiration and scope. Never invent an account number.
+
+`sign_out()` returns to BofA's accounts overview first when the tab is still
+on the Deals site, which has no sign-out of its own.
 
 Record the rest with the journal (`from cards_journal import Journal`):
 `journal.issuer("bofa", deferred=[{merchant, deal, reason}, ...])` for
