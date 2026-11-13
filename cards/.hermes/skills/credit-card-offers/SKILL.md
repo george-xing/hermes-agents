@@ -33,6 +33,15 @@ to Telegram; do not send messages yourself.
 - Issuers strictly one at a time, Chase → Amex → BofA: login, offers, sign-out
   and outcome before the next login. The journal enforces 60 s between logins.
 - No purchases, account settings, preference changes or unrelated terms.
+- Pop-ups: only `clear_interstitial()` clicks one, and only a dismiss control
+  ("Remind me later", "Not now", "Skip", "Close") on a prompt it knows can be
+  put off without changing anything. The user authorized putting off BofA's
+  customer-profile review this way on 2026-11-10. Never click "Review your
+  info", Continue, Update, Confirm or anything that opens or edits profile data,
+  and never dismiss a pop-up with your own `js(...)` click.
+- Only `open_deals()` may add a page script (BofA's Deals visibility shim, for one
+  navigation). Never call `Page.addScriptToEvaluateOnNewDocument` or inject
+  scripts yourself.
 - Cron has nobody to approve flagged commands: never `python3 -c`, `-e`,
   piped interpreters or `ps` pipelines in `terminal`. Use `browser_exec` and `read_file`.
 - Dry-run (when asked): `attach()` and read-only probes only. No navigation,
@@ -80,6 +89,7 @@ Login item (Chase item must allow `https://secure.chase.com`, Amex
    password field and the same `target_id`.
 3. `submit_login(IDENTIFIER, vault_target_id)`.
 4. Chase/Amex: `activate()` until the status is not `deadline`. BofA:
+   `open_deals()` right after `signed_in` (it clears known pop-ups first), then
    follow [additional-cards.md](references/additional-cards.md).
 5. Monthly bonus review if due (additional-cards.md), then `sign_out()`.
 
@@ -87,7 +97,11 @@ Login item (Chase item must allow `https://secure.chase.com`, Amex
 | --- | --- |
 | `attached`, `ready_for_vault_fill` | Next step. |
 | `already_authenticated` | Skip fill and submit; go to offers. |
-| `offers_ready` / `signed_in` (BofA) | Offers. |
+| `offers_ready` / `signed_in` (BofA) | Offers (BofA: `open_deals()`). |
+| `clear`, `dismissed` (pop-up) | Continue; a dismissed pop-up is recorded and reported. |
+| `interstitial_blocked` | Unknown pop-up or no safe dismiss control; nothing was clicked. Issuer done (partial, recorded); sign out. |
+| `deals_ready`, `deals_empty` (BofA) | Deals page loaded; classify and activate per additional-cards.md. `sections_loading` non-empty means do not set `offers_done`. |
+| `deals_not_loaded` (BofA) | Recorded with the sections still loading. Issuer done; sign out (it returns to BofA first). |
 | `mfa`, `rejected`, `captcha`, `blocked_fields_hidden` | Issuer done; it is recorded. Next issuer. |
 | `skipped_budget` | Issuer and every later one are skipped. Go to roundup. |
 | `refused` | A rule held; read `reason`. Fix the cause or move on; never work around it. |

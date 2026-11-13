@@ -42,6 +42,22 @@ Record `journal.fail(issuer, "mfa", status="blocked_mfa", mfa={"page": ...,
 "path": ..., "options": [...], "remember_device_option": bool})` without
 personal details. The roundup turns it into the user's action line.
 
+## Pop-ups (observed)
+
+- BofA Accounts overview, 2026-11-02..05: `role=dialog` with "Start of dialog
+  content", "Welcome to Online Banking", "It's time to review your customer
+  profile information", buttons **Review your info** / **Remind me later**,
+  footer code MAP8450939. `clear_interstitial()` puts it off with Remind me
+  later. Hidden dialogs stay in the DOM (session timeout with Log out / Stay
+  logged in, a savings promo, Your Privacy Choices); only rendered ones count.
+- `interstitial_blocked` is final for the issuer in that run. Do not click any
+  of its buttons yourself.
+- BofA Deals (`deals.merchant-rewards.com`, 2026-10-30..11-09): the header and
+  reward balance load, and each section shows "Loading <title>" until its
+  IntersectionObserver fires. `open_deals()` handles this; `deals_not_loaded`
+  lists the sections that never loaded. Opened without a BofA session, the site
+  says "Session Expired … initiate a new session from your main application".
+
 ## Offers
 
 - Chase (2026-11-01): hub tiles `[data-testid=commerce-tile]` with ids

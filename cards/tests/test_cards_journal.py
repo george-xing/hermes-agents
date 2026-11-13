@@ -188,3 +188,66 @@ class ChaseCardTests(unittest.TestCase):
         self.assertEqual(journal.chase_card_hub(hub), hub)
         with self.assertRaises(ValueError):
             journal.chase_card_hub("https://secure.chase.com/web/auth/dashboard?navKey=reviewMerchantOffers")
+
+
+class InterstitialChoiceTests(unittest.TestCase):
+    PROFILE = "Welcome to Online Banking — It’s time to review your customer profile information"
+
+    def test_profile_review_is_put_off_with_remind_me_later(self):
+        self.assertEqual(journal.choose_interstitial_action(self.PROFILE, ["Review your info", "Remind me later"]),
+                         ("dismiss", "Remind me later", "remind_later"))
+
+    def test_dismiss_controls_are_ranked_and_labels_normalized(self):
+        self.assertEqual(journal.choose_interstitial_action(self.PROFILE, ["close Dialog", "  remind  me later "]),
+                         ("dismiss", "remind me later", "remind_later"))
+        self.assertEqual(journal.choose_interstitial_action(self.PROFILE, ["Review your info", "Not now", "Close"]),
+                         ("dismiss", "Not now", "not_now"))
+
+    def test_only_review_your_info_blocks(self):
+        self.assertEqual(journal.choose_interstitial_action(self.PROFILE, ["Review your info"]),
+                         ("blocked", "no dismiss control", None))
+
+    def test_unknown_title_blocks_even_with_a_dismiss_control(self):
+        for title in ("Your session is about to time out", "Open a new savings account", "", None):
+            with self.subTest(title=title):
+                self.assertEqual(journal.choose_interstitial_action(title, ["Remind me later", "Close"]),
+                                 ("blocked", "unknown pop-up", None))
+
+    def test_mutating_labels_are_never_chosen(self):
+        for label in ("Review your info", "Continue", "Update", "Update now", "Confirm", "Next", "Yes", "Submit",
+                      "Open now", "Stay logged in", "Log out", "Remind me later to update", "Close and confirm"):
+            with self.subTest(label=label):
+                self.assertEqual(journal.choose_interstitial_action(self.PROFILE, [label])[0], "blocked")
+
+
+class DealsChecksTests(unittest.TestCase):
+    OK = "https://secure.bankofamerica.com/myaccounts/brain/redirect.go?target=offers&request_locale=en-us"
+
+    def test_only_bofas_offers_redirect_is_accepted(self):
+        self.assertEqual(journal.bofa_deals_href(self.OK), self.OK)
+        self.assertTrue(journal.bofa_deals_href(
+            "https://secure.bankofamerica.com/myaccounts/brain/redirect.go?request_locale=en-us&target=offers"
+            "&source=rewardDeals&location=tola"))
+        for bad in ("http://secure.bankofamerica.com/myaccounts/brain/redirect.go?target=offers",
+                    "https://secure.bankofamerica.com.evil.example/myaccounts/brain/redirect.go?target=offers",
+                    "https://evil.example/?u=https://secure.bankofamerica.com/myaccounts/brain/redirect.go?target=offers",
+                    "https://secure.bankofamerica.com/myaccounts/brain/redirect.go?target=myrwrds",
+                    "https://secure.bankofamerica.com/myaccounts/brain/redirect.go?target=offers&target=transfer",
+                    "https://secure.bankofamerica.com/other/redirect.go?target=offers",
+                    "https://deals.merchant-rewards.com/", "/myaccounts/brain/redirect.go?target=offers", "", None):
+            with self.subTest(href=bad):
+                with self.assertRaises(ValueError):
+                    journal.bofa_deals_href(bad)
+
+    def test_deals_probe_classification(self):
+        deals = journal.DEALS_ORIGIN
+        cases = [({"origin": "https://secure.bankofamerica.com", "tiles": 3}, "not_there"),
+                 ({"origin": deals, "expired": True, "loading": ["Featured Deals"]}, "expired"),
+                 ({"origin": deals, "tiles": 4, "loading": ["Daily Essentials"]}, "loading"),
+                 ({"origin": deals, "tiles": 12, "loading": []}, "ready"),
+                 ({"origin": deals, "tiles": 0, "loading": [], "empty": True}, "empty"),
+                 ({"origin": deals, "tiles": 0, "loading": []}, "unclear"),
+                 ({}, "not_there")]
+        for probe, verdict in cases:
+            with self.subTest(probe=probe):
+                self.assertEqual(journal.classify_deals(probe), verdict)

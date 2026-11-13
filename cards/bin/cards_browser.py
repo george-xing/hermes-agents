@@ -76,6 +76,8 @@ BANKS = {
         "submit": "#secure-signin-submit",
         "reveal_fade_in": True,
         "sign_out": None,  # Never observed; the visible "Log Out"/"Sign Out" text control is used.
+        # The Deals site has no sign-out; return here first (agent-observed 2026-11-05).
+        "accounts_url": "https://secure.bankofamerica.com/myaccounts/brain/redirect.go?target=accountsoverview&request_locale=en-us",
         # The Deals route is still undiscovered, so a signed-in account page is the end of login.
         "offers_ready": ("(() => location.origin === 'https://secure.bankofamerica.com' && "
                          "!location.pathname.includes('/auth/') && "
@@ -88,6 +90,9 @@ LOGIN_POLL_SECONDS = 45
 VERIFY_SECONDS = 15
 SIGN_OUT_SECONDS = 40
 FILL_READY_SECONDS = 15
+INTERSTITIAL_SECONDS = 10
+DEALS_SECONDS = 45
+MAX_INTERSTITIAL_CLICKS = 3  # Per issuer and run: a pop-up that keeps coming back is the user's to look at.
 
 MFA_TEXT = re.compile(r"verify your identity|confirm your identity|two-step verification|one-time (pass)?code"
                       r"|authorization code|security code|we don.t recognize (this|your) (device|computer)", re.I)
@@ -238,6 +243,98 @@ SIGN_OUT_PROBE_JS = """(() => {
           password_input: !!document.querySelector('input[type=password]') || !!frame?.querySelector('input[type=password]')};
 })()"""
 
+# Visible modal pop-ups (outermost only), each marked so the click and the check hit the same one.
+# Hidden dialogs stay in BofA's DOM (session timeout, promos), so rendering is checked, not presence.
+INTERSTITIAL_PROBE_JS = """(() => {
+  const seen = (e) => {
+    if (!e || e.getClientRects().length === 0) return false;
+    const s = getComputedStyle(e);
+    return s.display !== 'none' && s.visibility !== 'hidden';
+  };
+  const text = (e, n) => (e.innerText || e.getAttribute('aria-label') || e.value || '').trim().replace(/\\s+/g, ' ').slice(0, n);
+  const all = [...document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true]')].filter(seen);
+  return all.filter((d) => !all.some((o) => o !== d && o.contains(d))).slice(0, 3).map((d, i) => {
+    const marker = 'cards-dialog-' + i + '-' + Math.random().toString(36).slice(2);
+    d.setAttribute('data-cards-dialog', marker);
+    const named = document.getElementById(d.getAttribute('aria-labelledby') || '');
+    const heads = [...d.querySelectorAll('h1,h2,h3,[role=heading]')].filter(seen).map((h) => text(h, 100)).filter(Boolean);
+    const title = (named && text(named, 100)) || heads.join(' — ') || text(d, 100);
+    const buttons = [...d.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')].filter(seen);
+    buttons.forEach((b, j) => b.setAttribute('data-cards-button', marker + '-' + j));
+    return {marker, title: title.slice(0, 160), buttons: buttons.map((b) => text(b, 40))};
+  });
+})()"""
+
+INTERSTITIAL_CLICK_JS = """((marker, index) => {
+  const b = document.querySelector('[data-cards-button="' + marker + '-' + index + '"]');
+  if (!b) return false;
+  b.click();
+  return true;
+})(%s)"""
+
+INTERSTITIAL_GONE_JS = """((marker) => {
+  const d = document.querySelector('[data-cards-dialog="' + marker + '"]');
+  if (!d || d.getClientRects().length === 0) return true;
+  const s = getComputedStyle(d);
+  return s.display === 'none' || s.visibility === 'hidden';
+})(%s)"""
+
+# BofA's own links into the Deals site (absolute hrefs; cards_journal.bofa_deals_href vets them).
+DEALS_LINKS_JS = """[...document.querySelectorAll('a')]
+  .filter((a) => /^(cash back deals|view all deals)$/i.test((a.innerText || '').trim())).map((a) => a.href)"""
+
+DEALS_PROBE_JS = """(() => {
+  const body = document.body?.innerText || '';
+  const tiles = document.querySelectorAll('[data-testid^="offerTile-"],[data-testid^="gridUpsideOfferTile-"],'
+    + '[data-testid^="small-upside-offer-"]').length;
+  const loading = (body.match(/^Loading (?!more offers).+$/gm) || []).map((l) => l.slice(8).trim()).slice(0, 12);
+  return {origin: location.origin, tiles, loading,
+          empty: /no offers found|don.t have any activated offers/i.test(body),
+          expired: /session (has )?expired/i.test(body)};
+})()"""
+
+# Installed only by open_deals() for one navigation. The Deals site fetches each offer section only
+# once an IntersectionObserver reports it on screen, and a window behind the lock screen never renders,
+# so neither those callbacks nor requestAnimationFrame ever run (diagnosed 2026-11-10). On that host and
+# only while the page is hidden, observed elements are reported as visible and frames come from a timer.
+DEALS_SHIM_JS = """(() => {
+  if (location.hostname !== 'deals.merchant-rewards.com') return;
+  const hidden = () => document.visibilityState === 'hidden';
+  const NativeObserver = window.IntersectionObserver;
+  if (NativeObserver) {
+    window.IntersectionObserver = class extends NativeObserver {
+      constructor(callback, options) {
+        super(callback, options);
+        this.cardsCallback = callback;
+        this.cardsTargets = new Set();
+      }
+      observe(target) {
+        super.observe(target);
+        this.cardsTargets.add(target);
+        if (!hidden()) return;
+        setTimeout(() => {
+          if (!this.cardsTargets.has(target)) return;
+          const rect = target.getBoundingClientRect();
+          this.cardsCallback([{target, isIntersecting: true, intersectionRatio: 1, boundingClientRect: rect,
+                               intersectionRect: rect, rootBounds: null, time: performance.now()}], this);
+        }, 0);
+      }
+      unobserve(target) { this.cardsTargets.delete(target); super.unobserve(target); }
+      disconnect() { this.cardsTargets.clear(); super.disconnect(); }
+    };
+  }
+  const nativeFrame = window.requestAnimationFrame.bind(window);
+  const nativeCancel = window.cancelAnimationFrame.bind(window);
+  const timers = new Set();
+  window.requestAnimationFrame = (callback) => {
+    if (!hidden()) return nativeFrame(callback);
+    const id = setTimeout(() => { timers.delete(id); callback(performance.now()); }, 16);
+    timers.add(id);
+    return id;
+  };
+  window.cancelAnimationFrame = (id) => (timers.delete(id) ? clearTimeout(id) : nativeCancel(id));
+})()"""
+
 AMEX_NEXT_JS = """((button, skip) => {
   const btn = [...document.querySelectorAll(button)].find((b) => !skip.includes(b.getAttribute('data-cards-key') || ''));
   if (!btn) return null;
@@ -306,6 +403,7 @@ class Bank:
         get = harness.get if isinstance(harness, dict) else lambda name: getattr(harness, name, None)
         self._js, self._switch_tab, self._current_tab = get("js"), get("switch_tab"), get("current_tab")
         self._list_tabs, self._goto_url, self._new_tab = get("list_tabs"), get("goto_url"), get("new_tab")
+        self._cdp = get("cdp")
 
     # -- bookkeeping -------------------------------------------------------------------------
     def _state(self):
@@ -760,6 +858,120 @@ class Bank:
         self.journal.record(self.issuer, key, **meta)
         return self._done("activate_one", {"status": "verified"})
 
+    # -- pop-ups -------------------------------------------------------------------------------
+    def clear_interstitial(self):
+        """Dismiss known, non-mutating pop-ups (BofA's profile review) with their dismiss control.
+
+        Read-only when nothing is showing. An unknown pop-up, or one without a safe dismiss
+        control, is never clicked: the issuer is recorded as blocked and the agent signs out.
+        """
+        state = self._state()
+        if not state.get("login_submissions"):
+            return self._done("clear_interstitial", {"status": "refused", "reason": "no login in this run"})
+        if not self._attached():
+            return self._judgment("clear_interstitial", "bank tab is not attached")
+        dismissed = []
+        while True:
+            dialogs = self._js(INTERSTITIAL_PROBE_JS) or []
+            if not dialogs:
+                return self._done("clear_interstitial", {"status": "dismissed" if dismissed else "clear",
+                                                         "dismissed": dismissed})
+            choices = []
+            for dialog in dialogs:
+                title, buttons = mask(dialog["title"]), [mask(b) for b in dialog["buttons"]]
+                choices.append((dialog, title, buttons, *cards_journal.choose_interstitial_action(title, buttons)))
+            blocked = next((c for c in choices if c[3] == "blocked"), None)
+            if blocked:
+                return self._blocked_interstitial(blocked[1], blocked[2], blocked[4])
+            dialog, title, buttons, _, label, action = choices[0]
+            clicks = self._state().get("interstitial_clicks", 0)
+            if clicks >= MAX_INTERSTITIAL_CLICKS:
+                return self._blocked_interstitial(title, buttons, f"still showing after {clicks} dismissals")
+            self.journal.issuer(self.issuer, interstitial_clicks=clicks + 1)  # Durable before the click.
+            index = [" ".join(b.split()) for b in buttons].index(label)
+            if not self._js(INTERSTITIAL_CLICK_JS % _js_args(dialog["marker"], index)):
+                return self._blocked_interstitial(title, buttons, f"{label!r} could not be clicked")
+            if not self._poll(lambda: self._js(INTERSTITIAL_GONE_JS % _js_args(dialog["marker"])),
+                              seconds=INTERSTITIAL_SECONDS):
+                return self._blocked_interstitial(title, buttons, f"still showing after {label!r}")
+            entry = {"title": title, "action": action, "label": label, "dismissed": True, "at": cards_journal.now()}
+            self.journal.issuer(self.issuer, interstitial=entry,
+                                interstitials=self._state().get("interstitials", []) + [entry])
+            dismissed.append({"title": title, "action": action})
+
+    def _blocked_interstitial(self, title, buttons, reason):
+        info = {"title": title, "buttons": buttons[:8], "reason": reason, "dismissed": False}
+        self.journal.fail(self.issuer, "interstitial_blocked", status="partial", interstitial=info)
+        return self._done("clear_interstitial", {"status": "interstitial_blocked", **info})
+
+    # -- BofA Deals ----------------------------------------------------------------------------
+    def open_deals(self):
+        """Signed-in BofA → its Cash Back Deals redirect → deals.merchant-rewards.com with sections loaded.
+
+        Clears known pop-ups first, follows only BofA's own redirect link, and installs DEALS_SHIM_JS for
+        this navigation alone (removed in ``finally``). Returns {status, reached, tiles, sections_loading,
+        reason}; deals_ready and deals_empty set offers_page_verified for the agent's classification.
+        """
+        result = lambda status, reached=False, tiles=0, loading=(), reason="": self._done("open_deals", {
+            "status": status, "reached": reached, "tiles": tiles, "sections_loading": list(loading), "reason": reason})
+        state = self._state()
+        if self.issuer != "bofa":
+            return result("refused", reason="only BofA has a Deals site")
+        if not state.get("login_submissions") or state.get("login_result") != "signed_in":
+            return result("refused", reason="no signed-in BofA login in this run")
+        popup = self.clear_interstitial()
+        if popup["status"] not in ("clear", "dismissed"):
+            return result(popup["status"], reason=popup.get("reason", "pop-up"))
+        target = state.get("tab_id")
+        session = self._switch_tab(target)  # The CDP session the shim is added to and removed from.
+        if self._current_tab()["target_id"] != target:
+            return self._judgment("open_deals", "bank tab is not attached")
+        href = None
+        for candidate in self._js(DEALS_LINKS_JS) or []:
+            try:
+                href = cards_journal.bofa_deals_href(candidate)
+                break
+            except ValueError:
+                continue
+        if not href:
+            return self._judgment("open_deals", "no Cash Back Deals link to BofA's offers redirect")
+        script = None
+        probe, verdict = {}, "not_there"
+        try:
+            script = self._cdp("Page.addScriptToEvaluateOnNewDocument", session_id=session,
+                               source=DEALS_SHIM_JS)["identifier"]
+            self._goto_url(href)
+            deadline = self.clock() + DEALS_SECONDS
+            while self.clock() < deadline:
+                self.sleep(3)
+                try:  # The redirect chain can destroy the context; that is just another probe.
+                    probe = self._js(DEALS_PROBE_JS) or {}
+                except Exception:
+                    continue
+                verdict = cards_journal.classify_deals(probe)
+                if verdict in ("ready", "empty", "expired"):
+                    break
+        finally:
+            if script is not None:
+                removed = True
+                try:
+                    self._cdp("Page.removeScriptToEvaluateOnNewDocument", session_id=session, identifier=script)
+                except Exception:
+                    removed = False  # Recorded; the shim only ever acts on the hidden Deals host.
+                self.journal.issuer(self.issuer, deals_shim_removed=removed)
+        tiles, loading = probe.get("tiles", 0), probe.get("loading", [])
+        if verdict in ("ready", "empty") or (tiles and verdict == "loading"):
+            self.journal.issuer(self.issuer, offers_page_verified=True,
+                                deals={"tiles": tiles, "sections_loading": loading})
+            status = "deals_empty" if verdict == "empty" else "deals_ready"
+            reason = "some sections still loading" if loading else ""
+            return result(status, reached=True, tiles=tiles, loading=loading, reason=reason)
+        reason = {"expired": "Deals session expired", "not_there": "did not reach the Deals site",
+                  "loading": "sections still loading", "unclear": "no offer tiles or empty state"}[verdict]
+        self.journal.fail(self.issuer, "deals_not_loaded", status="partial",
+                          deals={"tiles": tiles, "sections_loading": loading, "reason": reason})
+        return result("deals_not_loaded", tiles=tiles, loading=loading, reason=reason)
+
     # -- sign-out ------------------------------------------------------------------------------
     def sign_out(self):
         state = self._state()
@@ -767,6 +979,9 @@ class Bank:
             return self._done("sign_out", {"status": "not_signed_in"})
         if not self._attached():
             return self._judgment("sign_out", "bank tab is not attached")
+        if self.cfg.get("accounts_url") and self._origin() not in self.cfg["tab_origins"]:
+            self._goto_url(self.cfg["accounts_url"])  # e.g. back from BofA's Deals site
+            self.sleep(5)
         if not self._js(SIGN_OUT_CLICK_JS % _js_args(self.cfg["sign_out"])):
             return self._judgment("sign_out", "no visible sign-out control")
         probe = {}
@@ -804,6 +1019,22 @@ def roundup(journal_path, reason="run ended at roundup"):
     return render(data)
 
 
+# Follow-on failures that say nothing about why an issuer's offers were never reached.
+CONSEQUENTIAL_FAILURES = ("offers not finished before sign-out", "sign-out not verified", cards_journal.INCOMPLETE)
+
+
+def _blocker(data, name, issuer):
+    """Short reason an issuer never reached its offers page, for the roundup's summary line."""
+    if (issuer.get("interstitial") or {}).get("dismissed") is False:
+        return "pop-up"
+    reasons = [f.get("reason", "") for f in data["failures"]
+               if isinstance(f, dict) and f.get("issuer") == name and not f.get("resolved")
+               and f.get("reason") not in CONSEQUENTIAL_FAILURES]
+    reason = reasons[0] if reasons else issuer.get("status", "unknown")
+    reason = {"deals_not_loaded": "Deals page didn't load"}.get(reason, reason)
+    return reason if len(reason) <= 80 else reason[:79] + "…"
+
+
 def render(data, limit=LIMIT):
     status = data["status"]
     try:
@@ -823,7 +1054,10 @@ def render(data, limit=LIMIT):
         mine = [a for a in data["activations"] if a["issuer"] == name]
         total += len(mine)
         state = issuer.get("status", "missing")
-        if name == "chase" and issuer.get("cards"):
+        reached = mine or issuer.get("offers_page_verified") or issuer.get("offers_done")
+        if issuer.get("login_submissions") and not reached and state != "completed":
+            summary = f"{bank}: offers not reached ({_blocker(data, name, issuer)})"
+        elif name == "chase" and issuer.get("cards"):
             summary = f"{bank}: {len(mine)} activated"
         else:
             card = f" {issuer['card_id']}" if issuer.get("card_id") else ""
@@ -841,6 +1075,19 @@ def render(data, limit=LIMIT):
             notes.append(f"{bank} login fields stayed hidden; no login was submitted.")
         elif state == "skipped_budget":
             notes.append(f"{bank} was skipped: not enough turns left; no login was submitted.")
+        popup = issuer.get("interstitial") or {}
+        if popup.get("dismissed") is False:
+            notes.append(f"{bank} blocked by a pop-up: {popup.get('title', '?')} "
+                         f"(buttons: {', '.join(popup.get('buttons', [])) or 'none'}; {popup.get('reason', '')}). "
+                         "Nothing on it was clicked.")
+        deals = issuer.get("deals") or {}
+        if deals.get("sections_loading"):
+            notes.append(f"{bank} Deals sections still loading after {DEALS_SECONDS} s: "
+                         f"{', '.join(deals['sections_loading'])}.")
+        elif deals.get("reason"):
+            notes.append(f"{bank} Deals page: {deals['reason']}.")
+        for seen in issuer.get("interstitials", []):
+            notes.append(f"{bank}: dismissed pop-up \"{seen.get('title', '?')}\" with \"{seen.get('label', '?')}\".")
         if issuer.get("login_submissions") and issuer.get("sign_out") != "verified":
             notes.append(f"{bank} sign-out not verified.")
         uncertain = [k for k in issuer.get("attempted_offers", []) if k not in {a["key"] for a in mine}]
@@ -873,7 +1120,8 @@ def render(data, limit=LIMIT):
             groups.append((None, mine))
         lines_by_issuer[name] = (summary_index, groups)
     # Statuses above already explain these; list only the other unresolved failures.
-    explained = {"skipped_budget", "mfa", "login fields hidden", "sign-out not verified", cards_journal.INCOMPLETE}
+    explained = {"skipped_budget", "mfa", "login fields hidden", "sign-out not verified", "interstitial_blocked",
+                 "deals_not_loaded", cards_journal.INCOMPLETE}
     for failure in data["failures"]:
         if isinstance(failure, dict) and not failure.get("resolved") and failure.get("reason") not in explained:
             notes.append(f"Issue: {failure.get('issuer', '?')} {failure.get('reason', '')}"

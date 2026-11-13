@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 
 def now():
@@ -86,6 +86,61 @@ def chase_card_hub(url):
     if "/merchantOffers/offer-hub" not in url or not re.search(r"[?&]accountId=\d+", url):
         raise ValueError("Capture the hub URL after selecting the card; it must carry accountId")
     return url
+
+
+# Pop-ups a bank shows over its pages that can be put off without changing anything. Only titles
+# listed here are ever dismissed; anything else blocks the issuer for the user to look at.
+# BofA showed the profile review over Accounts overview after every login 2026-11-02..05.
+INTERSTITIAL_TITLES = (re.compile(r"review your customer profile", re.I),)
+# Dismiss controls, best first, matched against the whole normalized label.
+DISMISS_LABELS = (
+    ("remind_later", re.compile(r"remind me later", re.I)),
+    ("not_now", re.compile(r"not now|no,? thanks|maybe later", re.I)),
+    ("skip", re.compile(r"skip( for now)?", re.I)),
+    ("close", re.compile(r"close( dialog)?|dismiss|[×✕x]", re.I)),
+)
+# Never clicked, even if a dismiss pattern ever matched: these open, submit or edit something.
+MUTATING_LABELS = re.compile(r"review|update|edit|change|confirm|verify|continue|next|submit|save|accept"
+                             r"|agree|yes|enroll|join|apply|open|get started|sign ?up|log ?out|sign ?out|stay",
+                             re.I)
+
+
+def choose_interstitial_action(title, buttons):
+    """("dismiss", label, action) for a known pop-up with a safe dismiss control, else ("blocked", reason, None)."""
+    title = " ".join((title or "").split())
+    if not any(p.search(title) for p in INTERSTITIAL_TITLES):
+        return "blocked", "unknown pop-up", None
+    labels = [" ".join((b or "").split()) for b in buttons]
+    for action, pattern in DISMISS_LABELS:
+        for label in labels:
+            if pattern.fullmatch(label) and not MUTATING_LABELS.search(label):
+                return "dismiss", label, action
+    return "blocked", "no dismiss control", None
+
+
+DEALS_ORIGIN = "https://deals.merchant-rewards.com"
+
+
+def bofa_deals_href(href):
+    """BofA's own Cash Back Deals redirect, the only way into the Deals site; anything else raises."""
+    parts = urlsplit(href or "")
+    if (parts.scheme != "https" or parts.netloc != "secure.bankofamerica.com"
+            or parts.path != "/myaccounts/brain/redirect.go" or parse_qs(parts.query).get("target") != ["offers"]):
+        raise ValueError("not BofA's Cash Back Deals redirect")
+    return href
+
+
+def classify_deals(probe):
+    """One read-only probe of the Deals page: ready | empty | loading | expired | not_there | unclear."""
+    if probe.get("origin") != DEALS_ORIGIN:
+        return "not_there"
+    if probe.get("expired"):
+        return "expired"
+    if probe.get("loading"):
+        return "loading"
+    if probe.get("tiles"):
+        return "ready"
+    return "empty" if probe.get("empty") else "unclear"
 
 
 # Hermes agent.max_turns in ~/.hermes/config.yaml. One turn is one model response,
