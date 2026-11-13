@@ -42,7 +42,18 @@ registers `DEALS_SHIM_JS` on the bank tab's CDP session for this one
 navigation and removes it in `finally`. On `deals.merchant-rewards.com` and only
 while the page is hidden, it reports observed elements as visible and drives
 animation frames from a 16 ms timer. It overrides nothing else and makes no
-network or DOM changes. `js(...)` clicks on BofA's menu links did not navigate
+network or DOM changes. Chrome only runs such a script on a session with the
+Page domain enabled; the first live try (2026-11-13) skipped that and the shim
+never ran, so `open_deals()` now enables it first.
+
+Every `open_deals()` writes `<journal>-deals-diag.json` next to the run
+journal and a one-line `deals_diag` summary in it. The file holds the frame
+tree with origins, per frame the visibility, whether the shim ran and how many
+observers it saw and fired, the DOM state of each "Loading" section, XHR/offer
+requests (origin and path only, method, status, timing), and console errors.
+No cookies, headers, query strings or input values are captured. When the page
+does not load, the roundup carries the summary line; read the file before
+changing anything. `js(...)` clicks on BofA's menu links did not navigate
 (2026-11-09); never navigate there by hand.
 
 The partner site (BankAmeriDeals, Accounts overview → Rewards & Deals → Cash
