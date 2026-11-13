@@ -20,6 +20,7 @@ from pathlib import Path
 import random
 import re
 import time
+from urllib.parse import urlsplit
 
 import cards_journal
 from cards_journal import Journal
@@ -102,6 +103,9 @@ REJECTED_TEXT = re.compile(r"(user ?id|username) or password (is|was|are|you ent
                            r"|information you entered (doesn.t|does not) match|incorrect password", re.I)
 CAPTCHA_TEXT = re.compile(r"captcha|verify you are (a )?human|i.m not a robot", re.I)
 SIGNED_OUT_TEXT = re.compile(r"(successfully|you.ve|you have) (been )?(signed|logged) (out|off)", re.I)
+# BofA's Log Out lands on an offers page that says neither "signed out" nor shows a login form (2026-11-13).
+BOFA_SIGNED_OUT = ("https://secure.bankofamerica.com", "/secure-offers-saso/",
+                   re.compile(r"thanks for choosing bank of america", re.I))
 
 
 def mask(text):
@@ -133,8 +137,22 @@ def signed_out(probe, issuer):
     if SIGNED_OUT_TEXT.search(body):  # Includes Chase's public logout page.
         return True
     origin = probe.get("origin") or ""
+    if issuer == "bofa" and _bofa_signed_out_page(probe):
+        return True
     return bool(probe.get("password_input")) and origin in BANKS[issuer]["tab_origins"] and bool(
         re.search(r"\b(log ?in|sign ?in)\b", body, re.I))
+
+
+def _bofa_signed_out_page(probe):
+    origin, path, text = BOFA_SIGNED_OUT
+    return (probe.get("origin") == origin and (probe.get("path") or "").startswith(path)
+            and bool(text.search((probe.get("title") or "") + "\n" + (probe.get("body") or ""))))
+
+
+def _bare_url(url):
+    """Origin and path only: query strings and fragments can carry tokens."""
+    parts = urlsplit(url or "")
+    return f"{parts.scheme}://{parts.netloc}{parts.path}"[:200] if parts.scheme else (url or "")[:40]
 
 
 def _js_args(*values):
@@ -239,7 +257,8 @@ SIGN_OUT_CLICK_JS = """((selector) => {
 
 SIGN_OUT_PROBE_JS = """(() => {
   const frame = document.querySelector('#logonbox')?.contentDocument;
-  return {origin: location.origin, body: (document.body?.innerText || '').slice(0, 2000),
+  return {origin: location.origin, path: location.pathname, title: document.title.slice(0, 120),
+          body: (document.body?.innerText || '').slice(0, 2000),
           password_input: !!document.querySelector('input[type=password]') || !!frame?.querySelector('input[type=password]')};
 })()"""
 
@@ -300,20 +319,25 @@ DEALS_PROBE_JS = """(() => {
 DEALS_SHIM_JS = """(() => {
   if (location.hostname !== 'deals.merchant-rewards.com') return;
   const hidden = () => document.visibilityState === 'hidden';
+  const stats = window.__cardsShim = {readyState: document.readyState, hiddenAtInstall: hidden(),
+                                      observers: 0, observed: 0, fired: 0, frames: 0};
   const NativeObserver = window.IntersectionObserver;
   if (NativeObserver) {
     window.IntersectionObserver = class extends NativeObserver {
       constructor(callback, options) {
         super(callback, options);
+        stats.observers += 1;
         this.cardsCallback = callback;
         this.cardsTargets = new Set();
       }
       observe(target) {
         super.observe(target);
         this.cardsTargets.add(target);
+        stats.observed += 1;
         if (!hidden()) return;
         setTimeout(() => {
           if (!this.cardsTargets.has(target)) return;
+          stats.fired += 1;
           const rect = target.getBoundingClientRect();
           this.cardsCallback([{target, isIntersecting: true, intersectionRatio: 1, boundingClientRect: rect,
                                intersectionRect: rect, rootBounds: null, time: performance.now()}], this);
@@ -328,11 +352,28 @@ DEALS_SHIM_JS = """(() => {
   const timers = new Set();
   window.requestAnimationFrame = (callback) => {
     if (!hidden()) return nativeFrame(callback);
-    const id = setTimeout(() => { timers.delete(id); callback(performance.now()); }, 16);
+    const id = setTimeout(() => { timers.delete(id); stats.frames += 1; callback(performance.now()); }, 16);
     timers.add(id);
     return id;
   };
   window.cancelAnimationFrame = (id) => (timers.delete(id) ? clearTimeout(id) : nativeCancel(id));
+})()"""
+
+# Per-frame diagnostics when the Deals page does not load: no cookies, input values or query strings.
+DEALS_FRAME_JS = """(() => {
+  const loading = [...document.querySelectorAll('body *')]
+    .filter((e) => e.children.length === 0 && /^Loading /.test((e.textContent || '').trim())).slice(0, 12)
+    .map((e) => {
+      const r = e.getBoundingClientRect(), section = e.closest('[data-testid^="section-"]');
+      return {text: e.textContent.trim().slice(0, 60), section: section ? section.getAttribute('data-testid').slice(0, 60) : null,
+              top: Math.round(r.top), height: Math.round(r.height), rendered: e.getClientRects().length > 0,
+              busy: !!e.closest('[aria-busy="true"]')};
+    });
+  return {origin: location.origin, path: location.pathname, visibility: document.visibilityState, hidden: document.hidden,
+          readyState: document.readyState, shim: window.__cardsShim || null,
+          observerPatched: !!window.IntersectionObserver && /cardsCallback/.test(String(window.IntersectionObserver)),
+          iframes: [...document.querySelectorAll('iframe')].map((f) => (f.src || '').split(/[?#]/)[0].slice(0, 120)).slice(0, 8),
+          loading};
 })()"""
 
 AMEX_NEXT_JS = """((button, skip) => {
@@ -403,7 +444,7 @@ class Bank:
         get = harness.get if isinstance(harness, dict) else lambda name: getattr(harness, name, None)
         self._js, self._switch_tab, self._current_tab = get("js"), get("switch_tab"), get("current_tab")
         self._list_tabs, self._goto_url, self._new_tab = get("list_tabs"), get("goto_url"), get("new_tab")
-        self._cdp = get("cdp")
+        self._cdp, self._drain_events = get("cdp"), get("drain_events")
 
     # -- bookkeeping -------------------------------------------------------------------------
     def _state(self):
@@ -936,8 +977,17 @@ class Bank:
         if not href:
             return self._judgment("open_deals", "no Cash Back Deals link to BofA's offers redirect")
         script = None
-        probe, verdict = {}, "not_there"
+        probe, verdict, diag = {}, "not_there", None
         try:
+            # Without Page.enable on this session Chrome never runs added scripts: on 2026-11-13 the live
+            # Deals page stayed Loading with the shim "installed", and the mock reproduced it.
+            self._cdp("Page.enable", session_id=session)
+            for domain in ("Network", "Runtime", "Log"):  # Events for the diagnostics only.
+                try:
+                    self._cdp(f"{domain}.enable", session_id=session)
+                except Exception:
+                    pass
+            self._events()  # Drop whatever the buffer held before this navigation.
             script = self._cdp("Page.addScriptToEvaluateOnNewDocument", session_id=session,
                                source=DEALS_SHIM_JS)["identifier"]
             self._goto_url(href)
@@ -951,6 +1001,7 @@ class Bank:
                 verdict = cards_journal.classify_deals(probe)
                 if verdict in ("ready", "empty", "expired"):
                     break
+            diag = self._deals_diagnostics(session, verdict)  # While the shim's counters still exist.
         finally:
             if script is not None:
                 removed = True
@@ -960,6 +1011,8 @@ class Bank:
                     removed = False  # Recorded; the shim only ever acts on the hidden Deals host.
                 self.journal.issuer(self.issuer, deals_shim_removed=removed)
         tiles, loading = probe.get("tiles", 0), probe.get("loading", [])
+        if diag:
+            self.journal.issuer(self.issuer, deals_diag=diag)
         if verdict in ("ready", "empty") or (tiles and verdict == "loading"):
             self.journal.issuer(self.issuer, offers_page_verified=True,
                                 deals={"tiles": tiles, "sections_loading": loading})
@@ -971,6 +1024,88 @@ class Bank:
         self.journal.fail(self.issuer, "deals_not_loaded", status="partial",
                           deals={"tiles": tiles, "sections_loading": loading, "reason": reason})
         return result("deals_not_loaded", tiles=tiles, loading=loading, reason=reason)
+
+    def _events(self):
+        try:
+            return (self._drain_events() if self._drain_events else None) or []
+        except Exception:
+            return []
+
+    def _deals_diagnostics(self, session, verdict):
+        """Write what the Deals page did to <journal>-deals-diag.json; return {file, summary} for the journal.
+
+        Redacted: URLs lose query strings and fragments, long digit runs are masked, and no headers,
+        cookies, request bodies or input values are read.
+        """
+        try:
+            requests, console, contexts = {}, [], {}
+            for event in self._events():
+                if event.get("session_id") not in (None, session):
+                    continue
+                method, params = event.get("method", ""), event.get("params", {})
+                rid = params.get("requestId")
+                if method == "Network.requestWillBeSent":
+                    request = params.get("request", {})
+                    requests[rid] = {"url": _bare_url(request.get("url", "")), "method": request.get("method"),
+                                     "type": params.get("type"), "start": params.get("timestamp")}
+                elif method == "Network.responseReceived" and rid in requests:
+                    entry = requests[rid]
+                    entry["status"] = params.get("response", {}).get("status")
+                    if entry.get("start") and params.get("timestamp"):
+                        entry["ms"] = round((params["timestamp"] - entry["start"]) * 1000)
+                elif method == "Network.loadingFailed" and rid in requests:
+                    requests[rid].update(failed=params.get("errorText"), blocked=params.get("blockedReason"),
+                                         cors=(params.get("corsErrorStatus") or {}).get("corsError"))
+                elif method == "Runtime.consoleAPICalled" and params.get("type") in ("error", "warning", "assert"):
+                    text = " ".join(str(a.get("value", a.get("description", ""))) for a in params.get("args", []))
+                    console.append({"type": params["type"], "text": text[:200]})
+                elif method == "Runtime.exceptionThrown":
+                    details = params.get("exceptionDetails", {})
+                    text = (details.get("exception") or {}).get("description") or details.get("text", "")
+                    console.append({"type": "exception", "text": text[:200]})
+                elif method == "Log.entryAdded" and params.get("entry", {}).get("level") in ("error", "warning"):
+                    entry = params["entry"]
+                    console.append({"type": "log-" + entry["level"],
+                                    "text": (entry.get("text", "")[:160] + " " + _bare_url(entry.get("url") or "")).strip()})
+                elif method == "Runtime.executionContextCreated":
+                    context = params.get("context", {})
+                    if (context.get("auxData") or {}).get("isDefault"):
+                        contexts[context["auxData"].get("frameId")] = context.get("id")
+            offer_requests = [{k: v for k, v in r.items() if k != "start"} for r in requests.values()
+                              if r.get("type") in ("XHR", "Fetch") or re.search(r"merchant-rewards|tripleup|upside", r["url"])]
+            frames = []
+
+            def walk(node):
+                frame = node.get("frame", {})
+                frames.append({"id": frame.get("id"), "url": _bare_url(frame.get("url", "")),
+                               "origin": frame.get("securityOrigin")})
+                for child in node.get("childFrames", []):
+                    walk(child)
+            walk(self._cdp("Page.getFrameTree", session_id=session).get("frameTree", {}))
+            for frame in frames[:6]:
+                try:
+                    if frame["id"] in contexts:
+                        frame["state"] = self._cdp("Runtime.evaluate", session_id=session, expression=DEALS_FRAME_JS,
+                                                   contextId=contexts[frame["id"]], returnByValue=True)["result"]["value"]
+                    elif frame is frames[0]:
+                        frame["state"] = self._js(DEALS_FRAME_JS)
+                except Exception as exc:
+                    frame["state"] = {"error": type(exc).__name__}
+            shims = [f["state"]["shim"] for f in frames if isinstance(f.get("state"), dict) and f["state"].get("shim")]
+            statuses = sorted({str(r.get("status") or r.get("failed") or "pending") for r in offer_requests})
+            summary = (f"{verdict}: {len(frames)} frame(s); shim ran in {len(shims)}"
+                       + (f" (observers {sum(s.get('observers', 0) for s in shims)}, fired {sum(s.get('fired', 0) for s in shims)})"
+                          if shims else "")
+                       + f"; {len(offer_requests)} XHR/offer request(s) [{', '.join(statuses) or 'none'}]"
+                       + f"; {len(console)} console error(s)")
+            report = json.loads(mask(json.dumps({"at": cards_journal.now(), "verdict": verdict, "summary": summary,
+                                                 "frames": frames, "offer_requests": offer_requests[:60],
+                                                 "console": console[:40]})))
+            path = self.journal.path.with_name(self.journal.path.stem + "-deals-diag.json")
+            cards_journal.atomic_json(path, report)
+            return {"file": path.name, "summary": report["summary"]}
+        except Exception as exc:  # Diagnostics never decide the outcome.
+            return {"file": None, "summary": f"diagnostics failed: {type(exc).__name__}"}
 
     # -- sign-out ------------------------------------------------------------------------------
     def sign_out(self):
@@ -994,7 +1129,8 @@ class Bank:
         if not ok:
             self.journal.fail(self.issuer, "sign-out not verified", status="partial", sign_out="unverified")
             return self._done("sign_out", {"status": "unverified"})
-        proof = "signed-out confirmation text" if SIGNED_OUT_TEXT.search(probe.get("body", "")) else "login wall"
+        proof = ("signed-out confirmation text" if SIGNED_OUT_TEXT.search(probe.get("body", ""))
+                 else "BofA signed-out page" if _bofa_signed_out_page(probe) else "login wall")
         # A blocked status (e.g. a challenge after login) is kept; otherwise the offers decide.
         status = state.get("status", "running")
         if status in ("running", "partial"):
@@ -1086,6 +1222,8 @@ def render(data, limit=LIMIT):
                          f"{', '.join(deals['sections_loading'])}.")
         elif deals.get("reason"):
             notes.append(f"{bank} Deals page: {deals['reason']}.")
+        if deals.get("reason") and (issuer.get("deals_diag") or {}).get("summary"):
+            notes.append(f"{bank} Deals diagnostics: {issuer['deals_diag']['summary']}.")
         for seen in issuer.get("interstitials", []):
             notes.append(f"{bank}: dismissed pop-up \"{seen.get('title', '?')}\" with \"{seen.get('label', '?')}\".")
         if issuer.get("login_submissions") and issuer.get("sign_out") != "verified":

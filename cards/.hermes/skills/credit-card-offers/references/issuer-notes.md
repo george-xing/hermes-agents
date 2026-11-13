@@ -81,5 +81,7 @@ personal details. The roundup turns it into the user's action line.
   "You have successfully signed out" text is valid proof.
 - Amex `#gnav_logout` returns to the login wall.
 - BofA's control was never observed; the helper clicks the visible "Log Out" /
-  "Sign Out" text. If it is missing, find it read-only and pass
+  "Sign Out" text. Log Out lands on `secure.bankofamerica.com/secure-offers-saso/`
+  ("Thanks for choosing Bank of America…"), which counts as signed out
+  (2026-11-13; earlier "unverified" BofA sign-outs were this page). If it is missing, find it read-only and pass
   `overrides={"sign_out": "#observed"}`.

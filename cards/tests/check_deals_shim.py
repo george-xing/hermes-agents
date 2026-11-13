@@ -1,15 +1,16 @@
 """Live check of DEALS_SHIM_JS in the cards Chrome, without any bank or the real Deals site.
 
 Opens a throwaway background tab, answers every https://deals.merchant-rewards.com/* request from a
-local mock (Fetch interception: nothing leaves the machine), and loads the mock twice: once plain and
-once with the shim. The mock gates each section's offer fetch on an IntersectionObserver, like the real
+local mock (Fetch interception: nothing leaves the machine), and loads the mock three times: plain, with
+the shim the way open_deals() adds it (Page.enable first), and with the shim but no Page.enable, which
+Chrome silently ignores (the 2026-11-13 live failure). The mock gates each section's offer fetch on an IntersectionObserver, like the real
 site, and its Activate button flips to "Activated" in a requestAnimationFrame callback. Closes the tab.
 
     ~/.hermes/hermes-agent/.venv/bin/python cards/tests/check_deals_shim.py [cdp_http_url]
 
 Not part of unittest discovery: it needs the running cards Chrome (port 19223) behind the lock screen,
-where tabs are hidden. Exit status 0 means: without the shim the sections stay Loading, with it the tiles
-render and activation completes.
+where tabs are hidden. Exit status 0 means: without the shim (or without Page.enable) the sections stay
+Loading; with it the tiles render and activation completes.
 """
 import asyncio
 import base64
@@ -49,7 +50,7 @@ for (const section of document.querySelectorAll('section')) {
 MOCK_OFFERS = json.dumps([{"id": "m1", "merchant": "Mock Coffee"}, {"id": "m2", "merchant": "Mock Books"}])
 
 
-async def load(cdp_http, with_shim):
+async def load(cdp_http, with_shim, page_enable=True):
     ws_url = json.load(urllib.request.urlopen(cdp_http + "/json/version"))["webSocketDebuggerUrl"]
     async with websockets.connect(ws_url, max_size=None) as ws:
         counter, pending = 0, {}
@@ -82,7 +83,8 @@ async def load(cdp_http, with_shim):
         try:
             session = (await send("Target.attachToTarget", {"targetId": target, "flatten": True}))["sessionId"]
             await send("Fetch.enable", {"patterns": [{"urlPattern": cards_journal.DEALS_ORIGIN + "/*"}]}, session)
-            await send("Page.enable", session=session)
+            if page_enable:
+                await send("Page.enable", session=session)
             if with_shim:
                 await send("Page.addScriptToEvaluateOnNewDocument", {"source": cb.DEALS_SHIM_JS}, session)
             await send("Page.navigate", {"url": cards_journal.DEALS_ORIGIN + "/?ff-upside=true"}, session)
@@ -110,13 +112,16 @@ async def load(cdp_http, with_shim):
 async def main(cdp_http):
     plain = await load(cdp_http, with_shim=False)
     shimmed = await load(cdp_http, with_shim=True)
+    unenabled = await load(cdp_http, with_shim=True, page_enable=False)
     print("without shim:", plain)
     print("with shim:   ", shimmed)
+    print("shim, no Page.enable:", unenabled)
     if plain["visibility"] != "hidden":
         print("SKIP: the tab is visible (someone is viewing the screen), so the native observer works anyway.")
         return 0
     ok = (plain["verdict"] == "loading" and not plain["probe"]["tiles"]
-          and shimmed["verdict"] == "ready" and shimmed["probe"]["tiles"] == 4 and shimmed["activation"] == "Activated")
+          and shimmed["verdict"] == "ready" and shimmed["probe"]["tiles"] == 4 and shimmed["activation"] == "Activated"
+          and unenabled["verdict"] == "loading" and not unenabled["probe"]["tiles"])
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

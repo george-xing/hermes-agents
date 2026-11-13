@@ -64,12 +64,19 @@ class FakePage:
         self.deals_probes = []
         self.goto_error = None
         self.scripts, self.removed_scripts, self.cdp_sessions = {}, [], []
+        self.events = []              # What drain_events() hands back once after navigation.
+        self.frame_state = {"origin": DEALS, "visibility": "hidden", "hidden": True, "loading": [],
+                            "shim": {"observers": 3, "observed": 7, "fired": 7, "frames": 40}}
 
     def harness(self, journal_path=None):
         self.journal_path = journal_path
         return {"js": self.js, "switch_tab": self.switch_tab, "current_tab": self.current_tab,
                 "list_tabs": lambda: list(self.tabs), "goto_url": self.goto_url, "new_tab": self.new_tab,
-                "cdp": self.cdp}
+                "cdp": self.cdp, "drain_events": self.drain_events}
+
+    def drain_events(self):
+        events, self.events = (self.events, []) if self.scripts else ([], self.events)
+        return events
 
     def cdp(self, method, session_id=None, **params):
         self.cdp_sessions.append((method, session_id))
@@ -80,6 +87,13 @@ class FakePage:
         if method == "Page.removeScriptToEvaluateOnNewDocument":
             self.removed_scripts.append(params["identifier"])
             return {}
+        if method in ("Page.enable", "Network.enable", "Runtime.enable", "Log.enable"):
+            return {}
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"frame": {"id": "F1", "url": DEALS + "/?ff-upside=true&token=SECRET123",
+                                            "securityOrigin": DEALS}}}
+        if method == "Runtime.evaluate" and params.get("contextId") == 7:
+            return {"result": {"value": self.frame_state}}
         raise AssertionError("unexpected cdp: " + method)
 
     def sleep(self, seconds):
@@ -143,6 +157,8 @@ class FakePage:
             return self.after_sign_out if self.signed_out else {"origin": self.origin, "body": "Offers", "password_input": False}
         if expr == cb.DEALS_LINKS_JS:
             return list(self.deals_links)
+        if expr == cb.DEALS_FRAME_JS:
+            return self.frame_state
         if expr == cb.DEALS_PROBE_JS:
             probe = self.deals_probes.pop(0) if len(self.deals_probes) > 1 else self.deals_probes[0]
             if isinstance(probe, Exception):
@@ -522,6 +538,18 @@ class SignOutTests(BankTestCase):
         self.assertFalse(cb.signed_out({"origin": "https://secure.chase.com", "body": "Loading",
                                         "password_input": True}, "chase"))
 
+    def test_bofa_offers_landing_page_counts_as_signed_out(self):
+        landing = {"origin": "https://secure.bankofamerica.com", "path": "/secure-offers-saso/",
+                   "title": "Thanks for choosing Bank of America. We look forward to serving you", "body": "Offers"}
+        self.assertTrue(cb.signed_out(landing, "bofa"))
+        self.assertFalse(cb.signed_out(dict(landing, path="/accounts-home/"), "bofa"))
+        self.assertFalse(cb.signed_out(dict(landing, title="Special offers", body="Log Out"), "bofa"))
+        self.assertFalse(cb.signed_out(landing, "chase"))
+        page, bank = InterstitialTests.signed_in_bofa(self)
+        page.after_sign_out = landing
+        self.assertEqual(bank.sign_out()["status"], "verified")
+        self.assertEqual(self.data()["issuers"]["bofa"]["sign_out_proof"], "BofA signed-out page")
+
     def test_sign_out_completes_only_after_offers(self):
         page, bank = self.logged_in("amex")
         page.amex_tiles = []
@@ -710,6 +738,69 @@ class DealsTests(BankTestCase):
         page, bank = self.signed_in_bofa(dict(PROFILE_REVIEW, buttons=["Review your info"]))
         self.assertEqual(bank.open_deals()["status"], "interstitial_blocked")
         self.assertEqual(page.scripts, {})
+
+    def test_page_domain_is_enabled_before_the_shim_is_added(self):
+        page, bank = self.signed_in_bofa()
+        page.deals_probes = [self.loading(tiles=3)]
+        bank.open_deals()
+        methods = [m for m, _ in page.cdp_sessions]
+        self.assertLess(methods.index("Page.enable"), methods.index("Page.addScriptToEvaluateOnNewDocument"))
+
+    def test_not_loaded_writes_redacted_diagnostics_next_to_the_journal(self):
+        page, bank = self.signed_in_bofa()
+        page.deals_probes = [self.loading("Featured Deals")]
+        page.frame_state = {"origin": DEALS, "visibility": "hidden", "hidden": True, "shim": None,
+                            "loading": [{"text": "Loading Featured Deals", "section": "section-featured"}]}
+        page.events = [
+            {"session_id": "S-T1", "method": "Runtime.executionContextCreated",
+             "params": {"context": {"id": 7, "auxData": {"frameId": "F1", "isDefault": True}}}},
+            {"session_id": "S-T1", "method": "Network.requestWillBeSent",
+             "params": {"requestId": "r1", "type": "Fetch", "timestamp": 10.0,
+                        "request": {"url": "https://deals.merchant-rewards.com/api/offers?card=4111111111111111&t=abc",
+                                    "method": "GET"}}},
+            {"session_id": "S-T1", "method": "Network.responseReceived",
+             "params": {"requestId": "r1", "timestamp": 10.25, "response": {"status": 401}}},
+            {"session_id": "S-T1", "method": "Runtime.exceptionThrown",
+             "params": {"exceptionDetails": {"exception": {"description": "TypeError: x is undefined"}}}},
+            {"session_id": "OTHER", "method": "Runtime.consoleAPICalled",
+             "params": {"type": "error", "args": [{"value": "another tab"}]}}]
+        self.assertEqual(bank.open_deals()["status"], "deals_not_loaded")
+        diag_path = self.path.with_name(self.path.stem + "-deals-diag.json")
+        report = json.loads(diag_path.read_text())
+        self.assertEqual(report["offer_requests"],
+                         [{"url": "https://deals.merchant-rewards.com/api/offers", "method": "GET", "type": "Fetch",
+                           "status": 401, "ms": 250}])
+        self.assertEqual(report["console"], [{"type": "exception", "text": "TypeError: x is undefined"}])
+        self.assertEqual(report["frames"][0]["url"], DEALS + "/")
+        self.assertEqual(report["frames"][0]["state"]["shim"], None)
+        self.assertNotIn("SECRET123", diag_path.read_text())
+        self.assertNotIn("4111111111111111", diag_path.read_text())
+        summary = self.data()["issuers"]["bofa"]["deals_diag"]
+        self.assertEqual(summary, {"file": diag_path.name, "summary": "loading: 1 frame(s); shim ran in 0; "
+                                   "1 XHR/offer request(s) [401]; 1 console error(s)"})
+        bank.sign_out()
+        self.assertIn("BofA Deals diagnostics: loading: 1 frame(s); shim ran in 0;", cb.roundup(self.path))
+
+    def test_ready_page_gets_a_short_diagnostics_summary(self):
+        page, bank = self.signed_in_bofa()
+        page.deals_probes = [self.loading(tiles=5)]
+        page.events = [{"session_id": "S-T1", "method": "Runtime.executionContextCreated",
+                        "params": {"context": {"id": 7, "auxData": {"frameId": "F1", "isDefault": True}}}}]
+        self.assertEqual(bank.open_deals()["status"], "deals_ready")
+        self.assertEqual(self.data()["issuers"]["bofa"]["deals_diag"]["summary"],
+                         "ready: 1 frame(s); shim ran in 1 (observers 3, fired 7); 0 XHR/offer request(s) [none]; "
+                         "0 console error(s)")
+
+    def test_a_failing_diagnostics_step_never_changes_the_outcome(self):
+        page, bank = self.signed_in_bofa()
+        page.deals_probes = [self.loading(tiles=2)]
+        page.cdp = lambda method, session_id=None, **params: (_ for _ in ()).throw(RuntimeError("boom")) \
+            if method == "Page.getFrameTree" else FakePage.cdp(page, method, session_id, **params)
+        bank = self.bank(page)
+        self.assertEqual(bank.open_deals()["status"], "deals_ready")
+        self.assertEqual(self.data()["issuers"]["bofa"]["deals_diag"],
+                         {"file": None, "summary": "diagnostics failed: RuntimeError"})
+        self.assertEqual(page.removed_scripts, ["1"])
 
     def test_sign_out_returns_from_the_deals_site_first(self):
         page, bank = self.signed_in_bofa()
