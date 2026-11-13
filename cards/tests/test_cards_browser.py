@@ -498,6 +498,29 @@ class SignOutTests(BankTestCase):
 
 
 class RoundupTests(BankTestCase):
+    def test_grouped_details_distinguish_identical_offers_by_card(self):
+        data = {"status": "partial", "started_at": "2026-11-08T08:00:00+00:00",
+                "issuers": {"chase": {"status": "completed", "cards": {
+                    "existing": {"card_id": "Sapphire (...1111)", "status": "completed"},
+                    "amazon": {"card_id": "Prime (...2222)", "status": "completed"}}},
+                    "amex": {"status": "partial", "card_id": "Platinum (...3333)",
+                             "attempted_offers": ["uncertain"]},
+                    "bofa": {"status": "blocked_mfa"}},
+                "activations": [
+                    {"issuer": "chase", "key": "a", "card_id": "Sapphire (...1111)", "merchant": "Shop", "deal": "10% back"},
+                    {"issuer": "chase", "key": "b", "card_id": "Prime (...2222)", "merchant": "Shop", "deal": "10% back"},
+                    {"issuer": "amex", "key": "c", "card_id": "Platinum (...3333)", "merchant": "Other", "deal": "$5 back"}],
+                "failures": []}
+        text = cb.render(data)
+        self.assertEqual(text.splitlines()[0], "[CRON_FAILURE]")
+        self.assertIn("Sapphire (...1111) — 1 activated\n  • Shop — 10% back", text)
+        self.assertIn("Prime (...2222) — 1 activated\n  • Shop — 10% back", text)
+        self.assertIn("Amex Platinum (...3333): 1 activated [partial]\n  • Other — $5 back", text)
+        self.assertIn("1 click(s) not verified", text)
+        self.assertIn("blocked_mfa", text)
+        self.assertNotIn("nothing new", text)
+        self.assertIn("Total: 3 activated.", text)
+
     def test_partial_run_starts_with_cron_failure_and_stays_under_limit(self):
         for i in range(400):
             key = f"chase::Prime Visa (...0768)::FIGG:{i}"

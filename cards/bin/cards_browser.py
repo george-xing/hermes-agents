@@ -824,16 +824,13 @@ def render(data, limit=LIMIT):
         total += len(mine)
         state = issuer.get("status", "missing")
         if name == "chase" and issuer.get("cards"):
-            per = "; ".join(f"{info.get('card_id', scope)}: "
-                            f"{sum(a.get('card_id') == info.get('card_id') for a in mine)}"
-                            f"{'' if info.get('status') == 'completed' else ' (' + info.get('status', 'pending') + ')'}"
-                            for scope, info in issuer["cards"].items())
-            summary = f"{bank}: {len(mine)} activated — {per}"
+            summary = f"{bank}: {len(mine)} activated"
         else:
             card = f" {issuer['card_id']}" if issuer.get("card_id") else ""
-            summary = f"{bank}{card}: {len(mine)} activated" + ("" if mine else " (nothing new)")
+            summary = f"{bank}{card}: {len(mine)} activated" + (" (nothing new)" if not mine and state == "completed" else "")
         if state != "completed":
             summary += f" [{state}]"
+        summary_index = len(notes)
         notes.append(summary)
         if state == "blocked_mfa":
             mfa = issuer.get("mfa", {})
@@ -857,7 +854,24 @@ def render(data, limit=LIMIT):
                          + (f" — {review['note']}" if review.get("note") else ""))
         for used in issuer.get("selector_overrides", []):
             notes.append(f"{bank}: selector override {used['key']}={used['value']} in {used['method']}; update BANKS.")
-        lines_by_issuer[name] = [f"• {a.get('merchant', '?')} — {a.get('deal', '?')}" for a in mine]
+        groups = []
+        if name == "chase" and issuer.get("cards"):
+            seen_cards = set()
+            for scope, info in issuer["cards"].items():
+                card_id = info.get("card_id")
+                if card_id and card_id in seen_cards:
+                    continue
+                if card_id:
+                    seen_cards.add(card_id)
+                matches = [a for a in mine if card_id and a.get("card_id") == card_id]
+                card_status = "" if info.get("status") == "completed" else f" [{info.get('status', 'pending')}]"
+                groups.append((f"{card_id or scope} — {len(matches)} activated{card_status}", matches))
+            unmatched = [a for a in mine if a.get("card_id") not in seen_cards]
+            if unmatched:
+                groups.append(("Card not identified", unmatched))
+        else:
+            groups.append((None, mine))
+        lines_by_issuer[name] = (summary_index, groups)
     # Statuses above already explain these; list only the other unresolved failures.
     explained = {"skipped_budget", "mfa", "login fields hidden", "sign-out not verified", cards_journal.INCOMPLETE}
     for failure in data["failures"]:
@@ -865,20 +879,36 @@ def render(data, limit=LIMIT):
             notes.append(f"Issue: {failure.get('issuer', '?')} {failure.get('reason', '')}"
                          + (f" ({failure['detail']})" if failure.get("detail") else ""))
     tail = f"Total: {total} activated." if total else "Total: nothing new activated."
-    text = "\n".join(mask(line) for line in head + notes)
-    budget = limit - utf16_len(text) - utf16_len(tail) - 80
-    detail, shown = [], 0
-    for name, lines in lines_by_issuer.items():
-        for line in lines:
-            line = mask(line)[:120]
-            if utf16_len(line) + 1 > budget:
-                break
-            detail.append(line)
-            budget -= utf16_len(line) + 1
-            shown += 1
+    # Reserve space for every status/note and the truthful total before offer details.
+    base = "\n".join(mask(line) for line in head + notes + [tail])
+    budget = limit - utf16_len(base) - 100
+    inserts, shown = {}, 0
+    for summary_index, groups in lines_by_issuer.values():
+        detail = []
+        for label, offers in groups:
+            if label is not None:
+                line = mask(f"  {label}")
+                if utf16_len(line) + 1 > budget:
+                    continue
+                detail.append(line)
+                budget -= utf16_len(line) + 1
+            for offer in offers:
+                line = mask(f"  • {offer.get('merchant', '?')} — {offer.get('deal', '?')}")[:120]
+                if utf16_len(line) + 1 > budget:
+                    break
+                detail.append(line)
+                budget -= utf16_len(line) + 1
+                shown += 1
+        inserts[summary_index] = detail
+    body = list(head)
+    for index, note in enumerate(notes):
+        body.append(mask(note))
+        body.extend(inserts.get(index, []))
     more = total - shown
-    out = text + ("\n" + "\n".join(detail) if detail else "")
-    out += (f"\nand {more} more activated offers" if more else "") + "\n" + tail
+    if more:
+        body.append(f"and {more} more activated offers")
+    body.append(tail)
+    out = "\n".join(body)
     if utf16_len(out) >= limit:  # Notes alone overflowed: keep the head and total.
         out = "\n".join(head) + "\n" + mask("\n".join(notes))
         while utf16_len(out + "\n" + tail) >= limit:
