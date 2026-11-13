@@ -3,7 +3,9 @@
 Opens a throwaway background tab, answers every https://deals.merchant-rewards.com/* request from a
 local mock (Fetch interception: nothing leaves the machine), and loads the mock three times: plain, with
 the shim the way open_deals() adds it (Page.enable first), and with the shim but no Page.enable, which
-Chrome silently ignores (the 2026-11-13 live failure). The mock gates each section's offer fetch on an IntersectionObserver, like the real
+Chrome silently ignores (the 2026-11-13 live failure). A fourth load puts the tab in front: with the
+screen in use it renders and the shim must stay native; behind the lock screen it is "visible" but
+draws nothing, and the shim must detect the stall. The output says which of the two it exercised. The mock gates each section's offer fetch on an IntersectionObserver, like the real
 site, and its Activate button flips to "Activated" in a requestAnimationFrame callback. Closes the tab.
 
     ~/.hermes/hermes-agent/.venv/bin/python cards/tests/check_deals_shim.py [cdp_http_url]
@@ -50,7 +52,7 @@ for (const section of document.querySelectorAll('section')) {
 MOCK_OFFERS = json.dumps([{"id": "m1", "merchant": "Mock Coffee"}, {"id": "m2", "merchant": "Mock Books"}])
 
 
-async def load(cdp_http, with_shim, page_enable=True):
+async def load(cdp_http, with_shim, page_enable=True, foreground=False):
     ws_url = json.load(urllib.request.urlopen(cdp_http + "/json/version"))["webSocketDebuggerUrl"]
     async with websockets.connect(ws_url, max_size=None) as ws:
         counter, pending = 0, {}
@@ -79,10 +81,12 @@ async def load(cdp_http, with_shim, page_enable=True):
                         "body": base64.b64encode(body.encode()).decode()}, message.get("sessionId")))
 
         task = asyncio.create_task(reader())
-        target = (await send("Target.createTarget", {"url": "about:blank", "background": True}))["targetId"]
+        target = (await send("Target.createTarget", {"url": "about:blank", "background": not foreground}))["targetId"]
         try:
             session = (await send("Target.attachToTarget", {"targetId": target, "flatten": True}))["sessionId"]
             await send("Fetch.enable", {"patterns": [{"urlPattern": cards_journal.DEALS_ORIGIN + "/*"}]}, session)
+            if foreground:
+                await send("Target.activateTarget", {"targetId": target})
             if page_enable:
                 await send("Page.enable", session=session)
             if with_shim:
@@ -96,6 +100,7 @@ async def load(cdp_http, with_shim, page_enable=True):
                 return reply["result"].get("value")  # undefined has no value
 
             hidden = await evaluate("document.visibilityState")
+            shim = await evaluate("window.__cardsShim || null")
             probe = await evaluate(cb.DEALS_PROBE_JS)
             activated = None
             if probe.get("tiles"):
@@ -103,7 +108,7 @@ async def load(cdp_http, with_shim, page_enable=True):
                 await asyncio.sleep(1)
                 activated = await evaluate("document.querySelector('[data-testid^=\"offerTile-\"] button').textContent")
             return {"visibility": hidden, "verdict": cards_journal.classify_deals(probe), "probe": probe,
-                    "activation": activated}
+                    "activation": activated, "shim": shim and {k: shim[k] for k in ("mode", "reason", "fired")}}
         finally:
             await send("Target.closeTarget", {"targetId": target})
             task.cancel()
@@ -113,15 +118,23 @@ async def main(cdp_http):
     plain = await load(cdp_http, with_shim=False)
     shimmed = await load(cdp_http, with_shim=True)
     unenabled = await load(cdp_http, with_shim=True, page_enable=False)
+    front = await load(cdp_http, with_shim=True, foreground=True)
     print("without shim:", plain)
     print("with shim:   ", shimmed)
     print("shim, no Page.enable:", unenabled)
+    print("shim, front tab:", front)
+    front_case = ("visible but not drawn (stall detected)" if front["shim"]["mode"] == "stalled"
+                  and front["visibility"] == "visible" else
+                  "rendering normally (shim stayed native)" if front["shim"]["mode"] == "native" else "unexpected")
+    print("front tab exercised:", front_case)
     if plain["visibility"] != "hidden":
         print("SKIP: the tab is visible (someone is viewing the screen), so the native observer works anyway.")
         return 0
     ok = (plain["verdict"] == "loading" and not plain["probe"]["tiles"]
           and shimmed["verdict"] == "ready" and shimmed["probe"]["tiles"] == 4 and shimmed["activation"] == "Activated"
-          and unenabled["verdict"] == "loading" and not unenabled["probe"]["tiles"])
+          and unenabled["verdict"] == "loading" and not unenabled["probe"]["tiles"]
+          and shimmed["shim"]["mode"] == "stalled" and front["verdict"] == "ready"
+          and front["activation"] == "Activated" and front_case != "unexpected")
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

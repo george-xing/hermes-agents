@@ -66,7 +66,9 @@ class FakePage:
         self.scripts, self.removed_scripts, self.cdp_sessions = {}, [], []
         self.events = []              # What drain_events() hands back once after navigation.
         self.frame_state = {"origin": DEALS, "visibility": "hidden", "hidden": True, "loading": [],
-                            "shim": {"observers": 3, "observed": 7, "fired": 7, "frames": 40}}
+                            "shim": {"mode": "stalled", "reason": "hidden", "observers": 3, "observed": 7,
+                                     "fired": 7, "frames": 40}}
+        self.event_chunks = None      # Or one list per drain_events() call after the shim is added.
 
     def harness(self, journal_path=None):
         self.journal_path = journal_path
@@ -75,6 +77,8 @@ class FakePage:
                 "cdp": self.cdp, "drain_events": self.drain_events}
 
     def drain_events(self):
+        if self.event_chunks is not None:
+            return self.event_chunks.pop(0) if self.scripts and self.event_chunks else []
         events, self.events = (self.events, []) if self.scripts else ([], self.events)
         return events
 
@@ -788,8 +792,23 @@ class DealsTests(BankTestCase):
                         "params": {"context": {"id": 7, "auxData": {"frameId": "F1", "isDefault": True}}}}]
         self.assertEqual(bank.open_deals()["status"], "deals_ready")
         self.assertEqual(self.data()["issuers"]["bofa"]["deals_diag"]["summary"],
-                         "ready: 1 frame(s); shim ran in 1 (observers 3, fired 7); 0 XHR/offer request(s) [none]; "
-                         "0 console error(s)")
+                         "ready: 1 frame(s); shim ran in 1 (stalled: hidden; observers 3, fired 7); "
+                         "0 XHR/offer request(s) [none]; 0 console error(s)")
+
+    def test_events_are_kept_from_every_poll_so_the_daemon_buffer_cannot_drop_them(self):
+        page, bank = self.signed_in_bofa()
+        page.deals_probes = [self.loading("Featured Deals")]
+        start = {"session_id": "S-T1", "method": "Network.requestWillBeSent",
+                 "params": {"requestId": "r1", "type": "Fetch", "timestamp": 1.0,
+                            "request": {"url": DEALS + "/api/sections", "method": "GET"}}}
+        noise = {"session_id": "S-T1", "method": "Network.dataReceived", "params": {"requestId": "r1"}}
+        done = {"session_id": "S-T1", "method": "Network.responseReceived",
+                "params": {"requestId": "r1", "timestamp": 1.5, "response": {"status": 200}}}
+        page.event_chunks = [[start, noise], [noise] * 3, [done]]  # Each poll drains one chunk.
+        bank.open_deals()
+        report = json.loads(self.path.with_name(self.path.stem + "-deals-diag.json").read_text())
+        self.assertEqual(report["offer_requests"], [{"url": DEALS + "/api/sections", "method": "GET", "type": "Fetch",
+                                                     "status": 200, "ms": 500}])
 
     def test_a_failing_diagnostics_step_never_changes_the_outcome(self):
         page, bank = self.signed_in_bofa()
