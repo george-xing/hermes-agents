@@ -93,6 +93,10 @@ SIGN_OUT_SECONDS = 40
 FILL_READY_SECONDS = 15
 INTERSTITIAL_SECONDS = 10
 DEALS_SECONDS = 45
+# CDP events open_deals keeps for its diagnostics (everything else in the daemon buffer is dropped).
+DIAG_EVENTS = ("Network.requestWillBeSent", "Network.responseReceived", "Network.loadingFailed",
+               "Runtime.consoleAPICalled", "Runtime.exceptionThrown", "Runtime.executionContextCreated",
+               "Log.entryAdded")
 MAX_INTERSTITIAL_CLICKS = 3  # Per issuer and run: a pop-up that keeps coming back is the user's to look at.
 
 MFA_TEXT = re.compile(r"verify your identity|confirm your identity|two-step verification|one-time (pass)?code"
@@ -314,13 +318,53 @@ DEALS_PROBE_JS = """(() => {
 
 # Installed only by open_deals() for one navigation. The Deals site fetches each offer section only
 # once an IntersectionObserver reports it on screen, and a window behind the lock screen never renders,
-# so neither those callbacks nor requestAnimationFrame ever run (diagnosed 2026-11-10). On that host and
-# only while the page is hidden, observed elements are reported as visible and frames come from a timer.
+# so neither those callbacks nor requestAnimationFrame ever run (diagnosed 2026-11-10). A hidden tab is
+# one case; the occluded-window flag can also leave the front tab "visible" with nothing drawn. So the
+# shim checks every second whether a native animation frame arrives within 100 ms. While rendering has
+# stalled (or the page is hidden), observed elements are reported as visible and frames come from a
+# 16 ms timer; once frames arrive again it steps back to native behaviour. Only on the Deals host.
 DEALS_SHIM_JS = """(() => {
   if (location.hostname !== 'deals.merchant-rewards.com') return;
-  const hidden = () => document.visibilityState === 'hidden';
-  const stats = window.__cardsShim = {readyState: document.readyState, hiddenAtInstall: hidden(),
-                                      observers: 0, observed: 0, fired: 0, frames: 0};
+  const nativeFrame = window.requestAnimationFrame.bind(window);
+  const nativeCancel = window.cancelAnimationFrame.bind(window);
+  const stats = window.__cardsShim = {mode: 'checking', reason: null, readyState: document.readyState,
+                                      hiddenAtInstall: document.visibilityState === 'hidden', checks: 0,
+                                      switches: 0, observers: 0, observed: 0, fired: 0, frames: 0};
+  let stalled = false;
+  const waiting = new Set();       // [observer, target] observed before rendering was known to stall
+  const nativeFrames = new Map();  // native frame id -> callback, handed to the timer when stalling
+  const timers = new Set();
+  const timerFrame = (callback) => {
+    const id = setTimeout(() => { timers.delete(id); stats.frames += 1; callback(performance.now()); }, 16);
+    timers.add(id);
+    return id;
+  };
+  const report = (observer, target) => {
+    if (!observer.cardsTargets.has(target)) return;
+    stats.fired += 1;
+    const rect = target.getBoundingClientRect();
+    observer.cardsCallback([{target, isIntersecting: true, intersectionRatio: 1, boundingClientRect: rect,
+                             intersectionRect: rect, rootBounds: null, time: performance.now()}], observer);
+  };
+  const setMode = (next, reason) => {
+    const changed = stats.mode === 'checking' || next !== stalled;
+    stats.reason = reason;
+    if (!changed) return;
+    if (stats.mode !== 'checking') stats.switches += 1;
+    stalled = next;
+    stats.mode = next ? 'stalled' : 'native';
+    if (!stalled) return;
+    for (const [id, callback] of nativeFrames) { nativeCancel(id); timerFrame(callback); }
+    nativeFrames.clear();
+    for (const pair of [...waiting]) { waiting.delete(pair); setTimeout(() => report(...pair), 0); }
+  };
+  const check = () => {
+    stats.checks += 1;
+    if (document.visibilityState === 'hidden') { setMode(true, 'hidden'); return; }
+    let drew = false;
+    nativeFrame(() => { drew = true; });
+    setTimeout(() => setMode(!drew, drew ? 'rendering' : 'no animation frame in 100 ms'), 100);
+  };
   const NativeObserver = window.IntersectionObserver;
   if (NativeObserver) {
     window.IntersectionObserver = class extends NativeObserver {
@@ -334,29 +378,26 @@ DEALS_SHIM_JS = """(() => {
         super.observe(target);
         this.cardsTargets.add(target);
         stats.observed += 1;
-        if (!hidden()) return;
-        setTimeout(() => {
-          if (!this.cardsTargets.has(target)) return;
-          stats.fired += 1;
-          const rect = target.getBoundingClientRect();
-          this.cardsCallback([{target, isIntersecting: true, intersectionRatio: 1, boundingClientRect: rect,
-                               intersectionRect: rect, rootBounds: null, time: performance.now()}], this);
-        }, 0);
+        if (stalled) setTimeout(() => report(this, target), 0);
+        else waiting.add([this, target]);
       }
       unobserve(target) { this.cardsTargets.delete(target); super.unobserve(target); }
       disconnect() { this.cardsTargets.clear(); super.disconnect(); }
     };
   }
-  const nativeFrame = window.requestAnimationFrame.bind(window);
-  const nativeCancel = window.cancelAnimationFrame.bind(window);
-  const timers = new Set();
   window.requestAnimationFrame = (callback) => {
-    if (!hidden()) return nativeFrame(callback);
-    const id = setTimeout(() => { timers.delete(id); stats.frames += 1; callback(performance.now()); }, 16);
-    timers.add(id);
+    if (stalled) return timerFrame(callback);
+    const id = nativeFrame((time) => { nativeFrames.delete(id); callback(time); });
+    nativeFrames.set(id, callback);
     return id;
   };
-  window.cancelAnimationFrame = (id) => (timers.delete(id) ? clearTimeout(id) : nativeCancel(id));
+  window.cancelAnimationFrame = (id) => {
+    if (timers.delete(id)) return clearTimeout(id);
+    nativeFrames.delete(id);
+    nativeCancel(id);
+  };
+  check();
+  setInterval(check, 1000);
 })()"""
 
 # Per-frame diagnostics when the Deals page does not load: no cookies, input values or query strings.
@@ -988,12 +1029,16 @@ class Bank:
                 except Exception:
                     pass
             self._events()  # Drop whatever the buffer held before this navigation.
+            events = []
+            keep = lambda: events.extend(e for e in self._events() if e.get("session_id") in (None, session)
+                                         and e.get("method") in DIAG_EVENTS)
             script = self._cdp("Page.addScriptToEvaluateOnNewDocument", session_id=session,
                                source=DEALS_SHIM_JS)["identifier"]
             self._goto_url(href)
             deadline = self.clock() + DEALS_SECONDS
             while self.clock() < deadline:
                 self.sleep(3)
+                keep()  # The daemon buffer holds only the last 500 events.
                 try:  # The redirect chain can destroy the context; that is just another probe.
                     probe = self._js(DEALS_PROBE_JS) or {}
                 except Exception:
@@ -1001,7 +1046,8 @@ class Bank:
                 verdict = cards_journal.classify_deals(probe)
                 if verdict in ("ready", "empty", "expired"):
                     break
-            diag = self._deals_diagnostics(session, verdict)  # While the shim's counters still exist.
+            keep()
+            diag = self._deals_diagnostics(session, verdict, events)  # While the shim's counters still exist.
         finally:
             if script is not None:
                 removed = True
@@ -1031,7 +1077,7 @@ class Bank:
         except Exception:
             return []
 
-    def _deals_diagnostics(self, session, verdict):
+    def _deals_diagnostics(self, session, verdict, events):
         """Write what the Deals page did to <journal>-deals-diag.json; return {file, summary} for the journal.
 
         Redacted: URLs lose query strings and fragments, long digit runs are masked, and no headers,
@@ -1039,9 +1085,7 @@ class Bank:
         """
         try:
             requests, console, contexts = {}, [], {}
-            for event in self._events():
-                if event.get("session_id") not in (None, session):
-                    continue
+            for event in events:
                 method, params = event.get("method", ""), event.get("params", {})
                 rid = params.get("requestId")
                 if method == "Network.requestWillBeSent":
@@ -1092,9 +1136,11 @@ class Bank:
                 except Exception as exc:
                     frame["state"] = {"error": type(exc).__name__}
             shims = [f["state"]["shim"] for f in frames if isinstance(f.get("state"), dict) and f["state"].get("shim")]
+            modes = sorted({f"{s.get('mode')}: {s.get('reason')}" for s in shims})
             statuses = sorted({str(r.get("status") or r.get("failed") or "pending") for r in offer_requests})
             summary = (f"{verdict}: {len(frames)} frame(s); shim ran in {len(shims)}"
-                       + (f" (observers {sum(s.get('observers', 0) for s in shims)}, fired {sum(s.get('fired', 0) for s in shims)})"
+                       + (f" ({'; '.join(modes)}; observers {sum(s.get('observers', 0) for s in shims)},"
+                          f" fired {sum(s.get('fired', 0) for s in shims)})"
                           if shims else "")
                        + f"; {len(offer_requests)} XHR/offer request(s) [{', '.join(statuses) or 'none'}]"
                        + f"; {len(console)} console error(s)")
